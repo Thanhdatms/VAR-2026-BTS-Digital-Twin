@@ -9,4 +9,8 @@ dependencies = [
     "pillow>=12.3.0",
     "plyfile>=1.1.4",
     "torch>=2.12.1",
+    "opencv-python>=4.10.0",
+    "scipy>=1.14.0",
+    "tqdm>=4.66.0",
+    "lpips>=0.1.4",
 ]
