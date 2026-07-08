@@ -27,6 +27,25 @@ pip install -q -e .
 if python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
     echo "== CUDA GPU detected: building the official diff-gaussian-rasterization extension =="
 
+    # torch.utils.cpp_extension refuses to build if the system nvcc's CUDA version doesn't
+    # match the CUDA version PyTorch itself was built against (RuntimeError:
+    # "The detected CUDA version (X) mismatches the version that was used to compile
+    # PyTorch (Y)"). This happens on Colab because the pip-installed torch wheel and the
+    # VM image's preinstalled system CUDA toolkit (nvcc) can drift out of sync -- pip always
+    # pulls the newest torch/CUDA build, while the VM's nvcc is whatever the image shipped
+    # with. Fix: reinstall torch matching the system nvcc's version, *before* attempting the
+    # extension build.
+    if command -v nvcc >/dev/null 2>&1; then
+        SYSTEM_CUDA="$(nvcc --version | grep -oP 'release \K[0-9]+\.[0-9]+' || true)"
+        TORCH_CUDA="$(python -c 'import torch; print(torch.version.cuda or "")')"
+        if [ -n "$SYSTEM_CUDA" ] && [ -n "$TORCH_CUDA" ] && [ "$SYSTEM_CUDA" != "$TORCH_CUDA" ]; then
+            echo "   System nvcc is CUDA $SYSTEM_CUDA but installed torch was built for CUDA $TORCH_CUDA"
+            echo "   -> reinstalling torch/torchvision for cu$(echo "$SYSTEM_CUDA" | tr -d '.') to match"
+            pip install --index-url "https://download.pytorch.org/whl/cu$(echo "$SYSTEM_CUDA" | tr -d '.')" \
+                --upgrade torch torchvision
+        fi
+    fi
+
     # Pin the build to the actual GPU's compute capability. Without this, nvcc falls back to
     # the extension's setup.py default arch list, which can include compute capabilities
     # (e.g. compute_35/50) that newer CUDA toolkits (12.x/13.x, common on current Colab
