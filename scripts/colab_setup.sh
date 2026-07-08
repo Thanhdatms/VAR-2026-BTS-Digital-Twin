@@ -41,8 +41,14 @@ if python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)
         if [ -n "$SYSTEM_CUDA" ] && [ -n "$TORCH_CUDA" ] && [ "$SYSTEM_CUDA" != "$TORCH_CUDA" ]; then
             echo "   System nvcc is CUDA $SYSTEM_CUDA but installed torch was built for CUDA $TORCH_CUDA"
             echo "   -> reinstalling torch/torchvision for cu$(echo "$SYSTEM_CUDA" | tr -d '.') to match"
+            # --force-reinstall is required: pip's version comparator treats the local CUDA
+            # tag (+cu130 vs +cu128) such that "already satisfied" can win over --upgrade
+            # alone, silently leaving the mismatched build in place. Deliberately NOT using
+            # --no-deps: torch's bundled nvidia-*-cuXX runtime packages must be swapped too,
+            # or torch would compile against cu128 headers but load cu130 runtime libs at
+            # import time.
             pip install --index-url "https://download.pytorch.org/whl/cu$(echo "$SYSTEM_CUDA" | tr -d '.')" \
-                --upgrade torch torchvision
+                --force-reinstall torch torchvision
         fi
     fi
 
@@ -59,9 +65,11 @@ if python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)
         git clone --recursive https://github.com/graphdeco-inria/diff-gaussian-rasterization \
             submodules/diff-gaussian-rasterization
     fi
-    # No -q here on purpose: if the nvcc/gcc build fails, the real compiler error (not just
-    # pip's generic "did not run successfully" wrapper) needs to be visible to debug it.
-    pip install submodules/diff-gaussian-rasterization
+    # Plain `pip install <path>` hides the actual nvcc/gcc compiler output on failure (it only
+    # prints a generic "did not run successfully, see above for output" wrapper, with nothing
+    # useful above it) -- confirmed empirically while debugging this exact extension. -v forces
+    # pip to stream the real build subprocess output so failures are actually diagnosable.
+    pip install -v submodules/diff-gaussian-rasterization
     python -c "from diff_gaussian_rasterization import GaussianRasterizer; print('diff_gaussian_rasterization: OK')"
 else
     echo "== No CUDA GPU detected: skipping the CUDA rasterizer build =="
