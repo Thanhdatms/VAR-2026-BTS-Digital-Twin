@@ -26,12 +26,23 @@ pip install -q -e .
 
 if python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
     echo "== CUDA GPU detected: building the official diff-gaussian-rasterization extension =="
+
+    # Pin the build to the actual GPU's compute capability. Without this, nvcc falls back to
+    # the extension's setup.py default arch list, which can include compute capabilities
+    # (e.g. compute_35/50) that newer CUDA toolkits (12.x/13.x, common on current Colab
+    # images) have dropped support for -- a common cause of "unsupported gpu architecture"
+    # build failures on this exact extension.
+    export TORCH_CUDA_ARCH_LIST="$(python -c 'import torch; print("%d.%d" % torch.cuda.get_device_capability(0))')"
+    echo "   TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST (detected from current GPU)"
+
     mkdir -p submodules
     if [ ! -d submodules/diff-gaussian-rasterization ]; then
         git clone --recursive https://github.com/graphdeco-inria/diff-gaussian-rasterization \
             submodules/diff-gaussian-rasterization
     fi
-    pip install -q submodules/diff-gaussian-rasterization
+    # No -q here on purpose: if the nvcc/gcc build fails, the real compiler error (not just
+    # pip's generic "did not run successfully" wrapper) needs to be visible to debug it.
+    pip install submodules/diff-gaussian-rasterization
     python -c "from diff_gaussian_rasterization import GaussianRasterizer; print('diff_gaussian_rasterization: OK')"
 else
     echo "== No CUDA GPU detected: skipping the CUDA rasterizer build =="

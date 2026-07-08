@@ -17,3 +17,5 @@ phase1
 /output/
 /submission/
 eval_report.json
+/dataset
+/.claude
