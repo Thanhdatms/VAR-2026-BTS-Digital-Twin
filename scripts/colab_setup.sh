@@ -22,7 +22,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 echo "== Installing project Python dependencies =="
-pip install -v -e .
+pip install --no-cache-dir -v -e .
 
 if python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
     echo "== CUDA GPU detected: building the official diff-gaussian-rasterization extension =="
