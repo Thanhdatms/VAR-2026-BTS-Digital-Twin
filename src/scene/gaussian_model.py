@@ -266,6 +266,11 @@ class GaussianModel:
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device=device).requires_grad_(True))
 
         self.active_sh_degree = self.max_sh_degree
+        # Needed if training resumes after this load (see train.py --load_iteration): the
+        # training loop indexes max_radii2D by the current gaussian count on every iteration
+        # (densification bookkeeping) and would IndexError against the empty tensor from
+        # __init__ otherwise. Harmless no-op for the inference-only path (render_submission.py).
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=device)
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -395,12 +400,18 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, max_points=None):
+        """max_points: not part of the original 3DGS algorithm -- an opt-in safety valve
+        (default None = unlimited, i.e. stock behavior). When the current count is already at
+        or above this cap, clone/split is skipped for this round (pruning below still runs, so
+        the count can drop back under the cap and resume growing). Added after a real
+        out-of-memory crash on a 16GB GPU at ~4.8M gaussians -- see conversation in PLAN.md."""
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
+        if max_points is None or self.get_xyz.shape[0] < max_points:
+            self.densify_and_clone(grads, max_grad, extent)
+            self.densify_and_split(grads, max_grad, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:

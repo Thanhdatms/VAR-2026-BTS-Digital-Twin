@@ -60,14 +60,25 @@ def validate(val_cameras, gaussians, background, iteration):
 
 
 def training(dataset, opt, pipe, save_iterations, val_interval,
-             resolution_scale=1.0, init_point_limit=None):
+             resolution_scale=1.0, init_point_limit=None, load_iteration=None, max_gaussians=None):
     device = pick_device(dataset.data_device)
 
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset.source_path, gaussians, model_path=dataset.model_path,
                   shuffle=True, device=device, resolution_scale=resolution_scale,
-                  init_point_limit=init_point_limit)
+                  init_point_limit=init_point_limit, load_iteration=load_iteration)
     gaussians.training_setup(opt)
+
+    start_iter = 1
+    if scene.loaded_iter is not None:
+        start_iter = scene.loaded_iter + 1
+        # load_ply (used to resume) always sets active_sh_degree = max_sh_degree, which is
+        # only correct once training has actually run past every `oneupSHdegree` threshold
+        # (every 1000 iters below). Recompute it for the iteration we're actually resuming at,
+        # so a resume before that point doesn't jump straight to full SH degree early.
+        gaussians.active_sh_degree = min(gaussians.max_sh_degree, (start_iter - 1) // 1000)
+        print(f"[train] resuming from iteration {scene.loaded_iter} "
+              f"({gaussians.get_xyz.shape[0]} gaussians, active_sh_degree={gaussians.active_sh_degree})")
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device=device)
@@ -87,7 +98,8 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
 
     viewpoint_stack = []
     ema_loss_for_log = 0.0
-    progress_bar = tqdm(range(1, opt.iterations + 1), desc="Training")
+    progress_bar = tqdm(range(start_iter, opt.iterations + 1), initial=start_iter - 1,
+                         total=opt.iterations, desc="Training")
 
     for iteration in progress_bar:
         gaussians.update_learning_rate(iteration)
@@ -98,7 +110,8 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
-        render_pkg = render(viewpoint_cam, gaussians, background)
+        bg = torch.rand(3, device=device) if opt.random_background else background
+        render_pkg = render(viewpoint_cam, gaussians, bg)
         image = render_pkg["render"]
         gt_image = viewpoint_cam.original_image
 
@@ -124,7 +137,8 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005,
-                                                 scene.cameras_extent, size_threshold)
+                                                 scene.cameras_extent, size_threshold,
+                                                 max_points=max_gaussians)
 
                 if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter):
@@ -158,6 +172,16 @@ if __name__ == "__main__":
                          help="Randomly subsample the initial point cloud to at most this many "
                               "points. Only for local CPU smoke runs (see scene/__init__.py) -- "
                               "leave unset for any real training run.")
+    parser.add_argument("--load_iteration", type=int, default=None,
+                         help="Resume from a checkpoint under --model_path/point_cloud/ instead "
+                              "of starting fresh from the COLMAP point cloud. Use -1 for the "
+                              "latest checkpoint found, or a specific saved iteration number "
+                              "(must be one of --save_iterations from the run being resumed).")
+    parser.add_argument("--max_gaussians", type=int, default=None,
+                         help="Safety cap: stop growing (clone/split) once the gaussian count "
+                              "reaches this many, to avoid CUDA out-of-memory. Not part of the "
+                              "original 3DGS algorithm -- unset (default) = unlimited, matching "
+                              "stock behavior. Pruning still runs either way.")
     args = parser.parse_args()
 
     dataset = lp.extract(args)
@@ -165,5 +189,6 @@ if __name__ == "__main__":
         parser.error("--model_path is required (e.g. output/HCM0249)")
 
     training(dataset, op.extract(args), pp.extract(args), args.save_iterations, args.val_interval,
-              resolution_scale=args.resolution_scale, init_point_limit=args.init_point_limit)
+              resolution_scale=args.resolution_scale, init_point_limit=args.init_point_limit,
+              load_iteration=args.load_iteration, max_gaussians=args.max_gaussians)
     print("Training complete.")

@@ -45,6 +45,10 @@ def load_image_tensor(path, device):
 
 def get_lpips_model(device):
     import lpips
+    # net="alex": the brief cites Zhang et al. 2018 (the LPIPS paper) but doesn't specify a
+    # backbone (alex/vgg/squeeze) -- absolute LPIPS values differ meaningfully between them.
+    # AlexNet is the paper's own recommended default for perceptual similarity. Swap here if
+    # the organizer's official scorer turns out to use a different backbone.
     model = lpips.LPIPS(net="alex").to(device)
     model.eval()
     return model
