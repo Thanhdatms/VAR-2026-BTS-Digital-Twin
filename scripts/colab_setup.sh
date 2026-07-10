@@ -47,6 +47,15 @@ if python3 -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1
             submodules/diff-gaussian-rasterization
     fi
 
+    # Upstream rasterizer_impl.h uses std::uintptr_t/uint32_t/uint64_t without including
+    # <cstdint>. Older nvcc/libstdc++ combos pulled those in transitively via other headers,
+    # but that doesn't happen with newer CUDA toolkits (12.x/13.x) in C++20 mode, producing
+    # "identifier is undefined" build errors. Patch it in until upstream fixes it.
+    RASTERIZER_IMPL_H="submodules/diff-gaussian-rasterization/cuda_rasterizer/rasterizer_impl.h"
+    if ! grep -q '#include <cstdint>' "$RASTERIZER_IMPL_H"; then
+        sed -i '1i #include <cstdint>' "$RASTERIZER_IMPL_H"
+    fi
+
     pip install -v submodules/diff-gaussian-rasterization
     python3 -c "from diff_gaussian_rasterization import GaussianRasterizer; print('diff_gaussian_rasterization: OK')"
 else
