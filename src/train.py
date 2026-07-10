@@ -61,6 +61,15 @@ def validate(val_cameras, gaussians, background, iteration):
 
 def training(dataset, opt, pipe, save_iterations, val_interval,
              resolution_scale=1.0, init_point_limit=None):
+    
+    print(f"[train] training scene {dataset.source_path} with {len(dataset.getTrainCameras())} train cameras "
+            f"and {len(dataset.getTestCameras())} test cameras, "
+            f"white_background={dataset.white_background}, "
+            f"data_device={dataset.data_device}, "
+            f"model_path={dataset.model_path}, "
+            f"resolution_scale={resolution_scale}, "
+            f"init_point_limit={init_point_limit}")
+    
     device = pick_device(dataset.data_device)
 
     gaussians = GaussianModel(dataset.sh_degree)
