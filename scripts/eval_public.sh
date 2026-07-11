@@ -42,7 +42,7 @@ for it in $ITERATIONS; do
     report_path="${REPORT_PREFIX}_iter_${it}.json"
 
     echo "== [iter $it] Rendering $DATASET_ROOT test poses from $MODELS_ROOT =="
-    python src/render_submission.py \
+    python3 src/render_submission.py \
         --dataset_root "$DATASET_ROOT" \
         --models_root "$MODELS_ROOT" \
         --output_root "$render_dir" \
@@ -51,7 +51,7 @@ for it in $ITERATIONS; do
         "$@"
 
     echo "== [iter $it] Scoring (psnr_max=$PSNR_MAX) =="
-    python src/evaluate.py \
+    python3 src/evaluate.py \
         --renders_root "$render_dir" \
         --dataset_root "$DATASET_ROOT" \
         --psnr_max "$PSNR_MAX" \
@@ -62,7 +62,7 @@ for it in $ITERATIONS; do
 done
 
 echo "== Summary across iterations =="
-python - "${REPORT_ARGS[@]}" <<'PYEOF'
+python3 - "${REPORT_ARGS[@]}" <<'PYEOF'
 import json
 import sys
 

@@ -25,7 +25,7 @@ DATA_DEVICE="${DATA_DEVICE:-cuda}"
 ITERATIONS="${ITERATIONS:-30000}"
 
 echo "== Training every scene under $DATASET_ROOT -> $OUTPUT_ROOT (iterations=$ITERATIONS) =="
-python scripts/train_all.py \
+python3 scripts/train_all.py \
   --dataset_root "$DATASET_ROOT" \
   --output_root "$OUTPUT_ROOT" \
   --data_device "$DATA_DEVICE" \
