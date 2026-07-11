@@ -91,6 +91,11 @@ class PipelineParams(ParamGroup):
         # thin/high-freq primitives don't get uniformly smeared. MUST be set identically at
         # train time and render time (a mismatch shifts brightness/opacity systematically) --
         # train.py and render_submission.py both read this same flag for that reason.
+        # NOTE: train.py only actually applies this once iteration > opt.densify_until_iter --
+        # every Gaussian starts sub-pixel-sized at init, so compensating opacity from iteration
+        # 0 crushes the whole scene's visibility before densification can grow points to a
+        # sane size (measured: tanked validation PSNR early in training). See train.py's
+        # `use_antialiasing` for the exact gating and the numbers that motivated it.
         self.antialiasing = True
         super().__init__(parser, "Pipeline Parameters")
 

@@ -104,7 +104,19 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
-        render_pkg = render(viewpoint_cam, gaussians, background, antialiasing=pipe.antialiasing)
+        # Antialiasing (utils/antialiasing.py) is withheld until densification is done. Every
+        # Gaussian starts at init with a tiny (nearest-neighbor-distance-based) scale, i.e.
+        # sub-pixel almost everywhere, not just at genuinely thin structures -- applying the
+        # opacity compensation from iteration 0 crushes the *whole* scene's opacity before
+        # densify_and_split has a chance to grow points to a sensible size, starving the
+        # gradient signal and badly slowing convergence (measured: iter-10000 validation PSNR
+        # dropped from ~20 to ~9.8 on public_set HCM0181 with it on from the start). Once
+        # densify_until_iter passes, geometry is essentially fixed and only opacity/color are
+        # still being fit, which is exactly when this correction should apply -- and matches
+        # render_submission.py, which always renders the fully-trained (post-densification)
+        # checkpoint with antialiasing on.
+        use_antialiasing = pipe.antialiasing and iteration > opt.densify_until_iter
+        render_pkg = render(viewpoint_cam, gaussians, background, antialiasing=use_antialiasing)
         image = render_pkg["render"]
         gt_image = viewpoint_cam.original_image
 
@@ -141,7 +153,7 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
             gaussians.optimizer.zero_grad(set_to_none=True)
 
             if val_cameras and (iteration % val_interval == 0 or iteration == opt.iterations):
-                validate(val_cameras, gaussians, background, iteration, antialiasing=pipe.antialiasing)
+                validate(val_cameras, gaussians, background, iteration, antialiasing=use_antialiasing)
 
             if iteration in save_iterations or iteration == opt.iterations:
                 tqdm.write(f"[iter {iteration}] saving checkpoint ({gaussians.get_xyz.shape[0]} gaussians)")
