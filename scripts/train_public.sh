@@ -24,7 +24,6 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-output/public_set}"
 DATA_DEVICE="${DATA_DEVICE:-cuda}"
 ITERATIONS="${ITERATIONS:-30000}"
 
-echo "== Training every scene under $DATASET_ROOT -> $OUTPUT_ROOT (iterations=$ITERATIONS) =="
 python3 scripts/train_all.py \
   --dataset_root "$DATASET_ROOT" \
   --output_root "$OUTPUT_ROOT" \
@@ -35,5 +34,3 @@ python3 scripts/train_all.py \
   --save_iterations 7000 15000 30000 \
   --val_interval 1000 \
   "$@"
-
-echo "== Done. Next: bash scripts/eval_public.sh =="
