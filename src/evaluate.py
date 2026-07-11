@@ -51,20 +51,23 @@ def get_lpips_model(device):
 
 
 def evaluate_scene(render_dir, gt_dir, lpips_model, device, psnr_max):
-    with open(os.path.join(render_dir, "index_map.json")) as f:
-        index_map = json.load(f)
+    # render_submission.py now names each output file after test_poses.csv's `image_name`
+    # directly, so the render and ground-truth filenames are identical -- no index_map needed.
+    gt_names = sorted(f for f in os.listdir(gt_dir) if not f.startswith("."))
+    missing = [name for name in gt_names if not os.path.exists(os.path.join(render_dir, name))]
+    if missing:
+        raise FileNotFoundError(
+            f"{render_dir}: missing render for {len(missing)}/{len(gt_names)} test poses: {missing}")
 
     per_image = []
-    for render_name, gt_name in sorted(index_map.items()):
-        render_path = os.path.join(render_dir, render_name)
-        gt_path = os.path.join(gt_dir, gt_name)
-        if not os.path.exists(gt_path):
-            raise FileNotFoundError(f"Missing ground truth for {gt_name}: {gt_path}")
+    for name in gt_names:
+        render_path = os.path.join(render_dir, name)
+        gt_path = os.path.join(gt_dir, name)
 
         pred = load_image_tensor(render_path, device)
         gt = load_image_tensor(gt_path, device)
         if pred.shape != gt.shape:
-            raise ValueError(f"Shape mismatch on {render_name}: render {tuple(pred.shape)} "
+            raise ValueError(f"Shape mismatch on {name}: render {tuple(pred.shape)} "
                               f"vs ground truth {tuple(gt.shape)}")
 
         with torch.no_grad():
@@ -75,7 +78,7 @@ def evaluate_scene(render_dir, gt_dir, lpips_model, device, psnr_max):
         psnr_norm = min(max(psnr_val / psnr_max, 0.0), 1.0)
         score = 0.4 * (1 - lpips_val) + 0.3 * ssim_val + 0.3 * psnr_norm
 
-        per_image.append({"render": render_name, "gt": gt_name, "psnr": psnr_val,
+        per_image.append({"render": name, "gt": name, "psnr": psnr_val,
                            "ssim": ssim_val, "lpips": lpips_val, "psnr_norm": psnr_norm,
                            "score": score})
 

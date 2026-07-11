@@ -1,13 +1,14 @@
 """Render competition test poses from trained checkpoints into the submission folder layout:
 
-    <output_root>/<scene_name>/0001.png
-    <output_root>/<scene_name>/0002.png
-    ...
-    <output_root>/<scene_name>/index_map.json   # {"0001.png": "<original image_name from CSV>"}
+    <output_root>/<scene_name>/<image_name>   # image_name exactly as given in test_poses.csv
 
-Images are numbered in test_poses.csv row order (see CLAUDE.md section 5 — the exact
-required naming/ordering wasn't in the brief provided to this repo; index_map.json is
-included so the mapping back to original filenames is always recoverable/auditable).
+Per the README shipped with the dataset, test_poses.csv's `width`/`height` columns are the
+"desired render resolution" and `image_name` is the "image filename" -- so both the output
+resolution and the output filename must match those columns exactly (not an invented naming
+scheme). Since scoring averages per-scene over ALL test poses (CLAUDE.md sec 1), a missing
+render for even one pose drags the whole scene's score down, so this script fails loudly
+(non-zero exit) if any expected image wasn't written, instead of silently submitting a
+partial scene.
 
 Example:
     python src/render_submission.py \
@@ -18,7 +19,6 @@ Example:
 
 import os
 import sys
-import json
 import argparse
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +57,18 @@ def discover_scenes(dataset_root):
     return scenes
 
 
+def save_image(arr, path):
+    img = Image.fromarray(arr)
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".jpg", ".jpeg"):
+        # Ground-truth test images ship as .JPG (see dataset README) -- match that format at
+        # near-lossless quality instead of PIL's default quality=75, which would inject visible
+        # compression artifacts that directly hurt LPIPS/SSIM/PSNR.
+        img.save(path, quality=100, subsampling=0)
+    else:
+        img.save(path)
+
+
 def render_scene(scene_source_path, model_path, output_root, sh_degree=3, iteration=None,
                   device=torch.device("cpu"), white_background=False):
     scene_name = os.path.basename(os.path.normpath(scene_source_path))
@@ -78,20 +90,33 @@ def render_scene(scene_source_path, model_path, output_root, sh_degree=3, iterat
 
     out_dir = os.path.join(output_root, scene_name)
     os.makedirs(out_dir, exist_ok=True)
-    index_map = {}
+
+    expected_names = [cam_info.image_name for cam_info in cam_infos]
+    failures = []
 
     with torch.no_grad():
-        for i, (cam_info, cam) in enumerate(zip(cam_infos, cameras), start=1):
-            image = torch.clamp(render(cam, gaussians, background)["render"], 0.0, 1.0)
-            arr = (image.permute(1, 2, 0).cpu().numpy() * 255.0).round().astype(np.uint8)
-            out_name = f"{i:04d}.png"
-            Image.fromarray(arr).save(os.path.join(out_dir, out_name))
-            index_map[out_name] = cam_info.image_name
+        for cam_info, cam in zip(cam_infos, cameras):
+            try:
+                image = torch.clamp(render(cam, gaussians, background)["render"], 0.0, 1.0)
+                arr = (image.permute(1, 2, 0).cpu().numpy() * 255.0).round().astype(np.uint8)
+                if arr.shape[0] != cam_info.height or arr.shape[1] != cam_info.width:
+                    raise ValueError(
+                        f"render size {arr.shape[1]}x{arr.shape[0]} != test_poses.csv "
+                        f"{cam_info.width}x{cam_info.height} for {cam_info.image_name}")
+                save_image(arr, os.path.join(out_dir, cam_info.image_name))
+            except Exception as e:
+                print(f"[{scene_name}] FAILED to render {cam_info.image_name}: {e}")
+                failures.append(cam_info.image_name)
 
-    with open(os.path.join(out_dir, "index_map.json"), "w", encoding="utf-8") as f:
-        json.dump(index_map, f, indent=2, ensure_ascii=False)
+    written = set(os.listdir(out_dir))
+    missing = [name for name in expected_names if name not in written]
+    if missing:
+        raise RuntimeError(
+            f"[{scene_name}] incomplete submission: {len(missing)}/{len(expected_names)} test "
+            f"poses have no output image (score is a per-scene average over ALL test poses -- "
+            f"a missing image drags the whole scene down, see CLAUDE.md sec 1): {missing}")
 
-    print(f"[{scene_name}] wrote {len(cam_infos)} renders -> {out_dir}")
+    print(f"[{scene_name}] wrote {len(expected_names)} renders -> {out_dir}")
 
 
 if __name__ == "__main__":
@@ -115,8 +140,17 @@ if __name__ == "__main__":
     scene_paths = ([os.path.join(args.dataset_root, args.scene)] if args.scene
                     else discover_scenes(args.dataset_root))
 
+    incomplete_scenes = []
     for scene_path in scene_paths:
         scene_name = os.path.basename(os.path.normpath(scene_path))
-        render_scene(scene_path, os.path.join(args.models_root, scene_name), args.output_root,
-                     sh_degree=args.sh_degree, iteration=args.iteration, device=device,
-                     white_background=args.white_background)
+        try:
+            render_scene(scene_path, os.path.join(args.models_root, scene_name), args.output_root,
+                         sh_degree=args.sh_degree, iteration=args.iteration, device=device,
+                         white_background=args.white_background)
+        except RuntimeError as e:
+            print(e)
+            incomplete_scenes.append(scene_name)
+
+    if incomplete_scenes:
+        sys.exit(f"[render_submission] {len(incomplete_scenes)} scene(s) incomplete, "
+                  f"fix before submitting: {incomplete_scenes}")
