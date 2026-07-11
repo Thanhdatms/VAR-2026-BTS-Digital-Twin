@@ -395,12 +395,20 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, max_gaussians=None):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
+        # Safety valve: densify_grad_threshold/densify_until_iter are tuned to recover thin
+        # structures (see OptimizationParams), but a lower threshold means more candidate
+        # points qualify every single densification cycle -- growth is compounding, not linear,
+        # and can blow through GPU memory well before densify_until_iter on a dense/complex
+        # scene (observed: OOM on a 32GB GPU by iteration ~5400 of 20000 on public_set/HCM0181).
+        # Once the point count crosses max_gaussians, stop growing (pruning below still runs)
+        # instead of crashing the whole train_all.py batch over one hard scene.
+        if max_gaussians is None or self.get_xyz.shape[0] < max_gaussians:
+            self.densify_and_clone(grads, max_grad, extent)
+            self.densify_and_split(grads, max_grad, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:

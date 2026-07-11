@@ -58,7 +58,7 @@ def validate(val_cameras, gaussians, background, iteration, antialiasing=False):
     mean_psnr = sum(psnrs) / len(psnrs)
     # tqdm.write (not print) so this doesn't break/duplicate the progress bar line -- same
     # convention as the checkpoint-save message below, which is why that one prints cleanly.
-    tqdm.write(f"[iter {iteration}] validation PSNR over {len(psnrs)} held-out GT images: {mean_psnr:.2f}")
+    tqdm.write(f"[iter {iteration}] Gaussian: {gaussians.get_xyz.shape[0]}, validation PSNR over {len(psnrs)} held-out GT images: {mean_psnr:.2f}")
     return mean_psnr
 
 
@@ -143,7 +143,8 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
                     size_threshold = (opt.densify_max_screen_size
                                        if iteration > opt.opacity_reset_interval else None)
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.min_opacity_prune,
-                                                 scene.cameras_extent, size_threshold)
+                                                 scene.cameras_extent, size_threshold,
+                                                 max_gaussians=opt.max_gaussians)
 
                 if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter):

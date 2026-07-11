@@ -116,16 +116,28 @@ class OptimizationParams(ParamGroup):
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
-        # Extended from the upstream default (15_000) and densify_grad_threshold halved: BTS
-        # towers/antenna panels/guy wires are thin, low-SfM-coverage structures that need more
-        # densification cycles and a lower gradient bar to spawn enough small Gaussians to
-        # represent them sharply (vanilla settings tend to leave them as few large, blurry
-        # Gaussians -- see the 2026-07-12 artifact review for the specific failure images).
-        # Raising --iterations further (e.g. 40_000) for tower-heavy scenes is recommended;
-        # if you do, also raise --position_lr_max_steps and --densify_until_iter to match, or
-        # the position LR schedule / densification window will end early relative to training.
+        # Extended from the upstream default (15_000): BTS towers/antenna panels/guy wires are
+        # thin, low-SfM-coverage structures that need more densification cycles to spawn
+        # enough small Gaussians to represent them sharply (vanilla settings tend to leave them
+        # as few large, blurry Gaussians -- see the 2026-07-12 artifact review for the specific
+        # failure images). Raising --iterations further (e.g. 40_000) for tower-heavy scenes is
+        # recommended; if you do, also raise --position_lr_max_steps and --densify_until_iter
+        # to match, or the position LR schedule / densification window will end early.
         self.densify_until_iter = 20_000
-        self.densify_grad_threshold = 0.00008
+        # NOTE: an earlier version of this file set this to 0.00008 (2.5x more aggressive than
+        # upstream's 0.0002) to densify thin structures harder. That grows the *whole* scene
+        # faster, not just thin structures (the threshold has no notion of "this Gaussian is
+        # part of a wire") -- compounding over more densification cycles, it OOM'd a 32GB GPU
+        # by iteration ~5400/20000 on public_set/HCM0181 (224_928 init points), well before
+        # densify_until_iter. 0.00015 is a smaller, safer step down from the upstream default;
+        # max_gaussians below is a hard backstop regardless of how this is tuned.
+        self.densify_grad_threshold = 0.00015
+        # Hard cap on Gaussian count: densify_and_prune stops growing (but keeps pruning) past
+        # this, so a hard/dense scene can't OOM and take down the rest of train_all.py's batch.
+        # 6M is comfortably under the ~7.2M the original (pre-tuning) settings reached on
+        # private_set1/HCM0249 without issue on this project's GPU -- lower it if your GPU has
+        # less headroom, e.g. via `--max_gaussians 4000000`.
+        self.max_gaussians = 9_000_000
         self.random_background = False
         # Previously hard-coded as literals in train.py's densify_and_prune call; pulled out
         # here so they can be tuned per scene without editing code (e.g. tightening
