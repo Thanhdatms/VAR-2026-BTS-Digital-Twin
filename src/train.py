@@ -16,10 +16,11 @@
 #     erroring, since the compute target was left open (CLAUDE.md section 3).
 
 import os
+import random
 import sys
 from argparse import ArgumentParser
-from random import randint
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -48,7 +49,27 @@ def find_public_gt_images_dir(source_path):
     return d if os.path.isdir(d) else None
 
 
-def validate(val_cameras, gaussians, background, iteration, antialiasing=False):
+def set_seed(seed):
+    # Seeds every RNG this pipeline touches at the Python/PyTorch level: train-camera shuffle
+    # order (scene/__init__.py's random.shuffle), per-iteration camera sampling order (below),
+    # and the random offsets densify_and_split draws when splitting a Gaussian in two
+    # (scene/gaussian_model.py's torch.normal). This does NOT make CUDA training bit-exact
+    # reproducible, though: the diff_gaussian_rasterization backward pass accumulates
+    # per-Gaussian gradients via atomicAdd across parallel CUDA threads, and that summation
+    # order (hence float rounding) isn't controlled by any seed -- a documented limitation of
+    # the official kernel (no determinism flag exists). Over 10000s of iterations that's
+    # enough to occasionally flip which Gaussians land on the wrong side of the
+    # opacity/screen-size prune thresholds, so a ~1 PSNR unit spread between "identical" seeded
+    # runs is expected. Seeding is still worth it -- it removes the larger, fully-avoidable
+    # noise from unseeded camera order / split randomness when A/B-testing hyperparameters.
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def validate(val_cameras, gaussians, background, iteration, antialiasing=False, train_loss=None):
     psnrs = []
     with torch.no_grad():
         for cam in val_cameras:
@@ -56,17 +77,26 @@ def validate(val_cameras, gaussians, background, iteration, antialiasing=False):
                 render(cam, gaussians, background, antialiasing=antialiasing)["render"], 0.0, 1.0)
             psnrs.append(psnr(image.unsqueeze(0), cam.original_image.unsqueeze(0)).mean().item())
     mean_psnr = sum(psnrs) / len(psnrs)
+    # train_loss is the EMA train loss at this iteration (see ema_loss_for_log in the training
+    # loop) -- printed alongside validation PSNR so you can see both on one line instead of
+    # having to cross-reference the tqdm postfix, e.g. to tell a PSNR dip (like the
+    # opacity-reset-induced ones, see earlier discussion) apart from a genuine regression.
+    loss_str = f", train loss(ema): {train_loss:.5f}" if train_loss is not None else ""
     # tqdm.write (not print) so this doesn't break/duplicate the progress bar line -- same
     # convention as the checkpoint-save message below, which is why that one prints cleanly.
-    tqdm.write(f"[iter {iteration}] Gaussian: {gaussians.get_xyz.shape[0]}, validation PSNR over {len(psnrs)} held-out GT images: {mean_psnr:.2f}")
+    tqdm.write(f"[iter {iteration}] Gaussian: {gaussians.get_xyz.shape[0]}{loss_str}, "
+               f"validation PSNR over {len(psnrs)} held-out GT images: {mean_psnr:.2f}")
     return mean_psnr
 
 
 def training(dataset, opt, pipe, save_iterations, val_interval,
-             resolution_scale=1.0, init_point_limit=None):
-    
+             resolution_scale=1.0, init_point_limit=None, seed=0):
+
     print("Training ")
-    
+
+    if seed is not None:
+        set_seed(seed)
+
     device = pick_device(dataset.data_device)
 
     gaussians = GaussianModel(dataset.sh_degree)
@@ -91,6 +121,20 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
         print("[train] no ground-truth test images available for this scene "
               "(expected for private_set1) — logging train loss only.")
 
+    # Antialiasing (utils/antialiasing.py) is only applied in a trailing window of training,
+    # ramped in rather than switched on all at once (see OptimizationParams.antialiasing_window
+    # / antialiasing_ramp_iters docstring). Two reasons, both observed on public_set/HCM0181:
+    #   1. Every Gaussian starts sub-pixel-sized at init (nearest-neighbor-distance-based
+    #      scale) and opacity is fit for 20k+ iterations assuming no compensation -- flipping
+    #      it on abruptly multiplies opacity by a factor the model was never trained against,
+    #      causing a sudden loss spike that then has to be optimized away.
+    #   2. It's real per-iteration extra compute (a fresh, view-dependent 2D-covariance pass
+    #      over the whole point cloud every iteration -- can't be cached across iterations
+    #      since a different random camera is sampled each time), so it measurably slows
+    #      training for as long as it's active. Restricting it to the last antialiasing_window
+    #      iterations (instead of the whole post-densification tail) bounds that cost.
+    antialiasing_from_iter = max(opt.densify_until_iter, opt.iterations - opt.antialiasing_window)
+
     viewpoint_stack = []
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(1, opt.iterations + 1), desc="Training")
@@ -102,21 +146,14 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
 
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
+        viewpoint_cam = viewpoint_stack.pop(random.randint(0, len(viewpoint_stack) - 1))
 
-        # Antialiasing (utils/antialiasing.py) is withheld until densification is done. Every
-        # Gaussian starts at init with a tiny (nearest-neighbor-distance-based) scale, i.e.
-        # sub-pixel almost everywhere, not just at genuinely thin structures -- applying the
-        # opacity compensation from iteration 0 crushes the *whole* scene's opacity before
-        # densify_and_split has a chance to grow points to a sensible size, starving the
-        # gradient signal and badly slowing convergence (measured: iter-10000 validation PSNR
-        # dropped from ~20 to ~9.8 on public_set HCM0181 with it on from the start). Once
-        # densify_until_iter passes, geometry is essentially fixed and only opacity/color are
-        # still being fit, which is exactly when this correction should apply -- and matches
-        # render_submission.py, which always renders the fully-trained (post-densification)
-        # checkpoint with antialiasing on.
-        use_antialiasing = pipe.antialiasing and iteration > opt.densify_until_iter
-        render_pkg = render(viewpoint_cam, gaussians, background, antialiasing=use_antialiasing)
+        if pipe.antialiasing and iteration > antialiasing_from_iter:
+            antialiasing_progress = min(
+                1.0, (iteration - antialiasing_from_iter) / max(1, opt.antialiasing_ramp_iters))
+        else:
+            antialiasing_progress = 0.0
+        render_pkg = render(viewpoint_cam, gaussians, background, antialiasing=antialiasing_progress)
         image = render_pkg["render"]
         gt_image = viewpoint_cam.original_image
 
@@ -154,7 +191,8 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
             gaussians.optimizer.zero_grad(set_to_none=True)
 
             if val_cameras and (iteration % val_interval == 0 or iteration == opt.iterations):
-                validate(val_cameras, gaussians, background, iteration, antialiasing=use_antialiasing)
+                validate(val_cameras, gaussians, background, iteration,
+                         antialiasing=antialiasing_progress, train_loss=ema_loss_for_log)
 
             if iteration in save_iterations or iteration == opt.iterations:
                 tqdm.write(f"[iter {iteration}] saving checkpoint ({gaussians.get_xyz.shape[0]} gaussians)")
@@ -178,6 +216,11 @@ if __name__ == "__main__":
                          help="Randomly subsample the initial point cloud to at most this many "
                               "points. Only for local CPU smoke runs (see scene/__init__.py) -- "
                               "leave unset for any real training run.")
+    parser.add_argument("--seed", type=int, default=0,
+                         help="Seed for Python/numpy/torch RNGs (camera order, split noise) -- "
+                              "cuts most but not all run-to-run variance, see set_seed()'s "
+                              "docstring for why it isn't fully deterministic on CUDA. Pass "
+                              "different values to deliberately probe run-to-run spread.")
     args = parser.parse_args()
 
     dataset = lp.extract(args)
@@ -185,5 +228,6 @@ if __name__ == "__main__":
         parser.error("--model_path is required (e.g. output/HCM0249)")
 
     training(dataset, op.extract(args), pp.extract(args), args.save_iterations, args.val_interval,
-              resolution_scale=args.resolution_scale, init_point_limit=args.init_point_limit)
+              resolution_scale=args.resolution_scale, init_point_limit=args.init_point_limit,
+              seed=args.seed)
     print("Training complete.")

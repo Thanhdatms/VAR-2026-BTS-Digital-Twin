@@ -18,13 +18,17 @@ import torch
 
 
 def render(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0,
-           sh_degree_override=None, antialiasing=False):
+           sh_degree_override=None, antialiasing=0.0):
     """Returns a dict with keys: render (3,H,W), viewspace_points, visibility_filter, radii.
 
     antialiasing: Mip-Splatting-style opacity compensation for the fixed screen-space
         dilation (see PipelineParams.antialiasing in arguments/__init__.py for why this
-        matters). Must match between the render() calls used for training and the ones used
-        for submission rendering, or output brightness/opacity will be systematically off.
+        matters). 0.0/False disables it, 1.0/True is full compensation, a float in between
+        linearly ramps toward it (see train.py's antialiasing_progress -- switching this on
+        abruptly mid-training causes a loss spike, since opacity was fit assuming no
+        compensation). Must match between the render() calls used for training and the ones
+        used for submission rendering (both at the final, fully-ramped value), or output
+        brightness/opacity will be systematically off.
     """
     device = pc.get_xyz.device
 

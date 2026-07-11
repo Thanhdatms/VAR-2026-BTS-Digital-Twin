@@ -27,7 +27,11 @@ from utils.antialiasing import compute_screenspace_cov2d, mip_antialiasing_opaci
 
 
 def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0,
-                 sh_degree_override=None, antialiasing=False):
+                 sh_degree_override=None, antialiasing=0.0):
+    """antialiasing: 0.0/False disables it (no extra compute); 1.0/True is full compensation;
+    any value in between linearly blends opacity toward the fully-compensated result (see
+    utils/antialiasing.py and OptimizationParams.antialiasing_ramp_iters for why train.py
+    ramps this instead of switching it on all at once)."""
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype,
                                            requires_grad=True, device=pc.get_xyz.device)
     try:
@@ -55,10 +59,13 @@ def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
     opacities = pc.get_opacity
-    if antialiasing:
+    strength = float(antialiasing)
+    if strength > 0.0:
         a0, b0, c0, _ = compute_screenspace_cov2d(
             pc.get_xyz, pc.get_scaling, pc.get_rotation, viewpoint_camera, scaling_modifier)
         aa_coef = mip_antialiasing_opacity_coef(a0, b0, c0).unsqueeze(-1)
+        if strength < 1.0:
+            aa_coef = (1.0 - strength) + strength * aa_coef
         opacities = opacities * aa_coef
 
     rendered_image, radii = rasterizer(

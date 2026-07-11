@@ -138,6 +138,22 @@ class OptimizationParams(ParamGroup):
         # private_set1/HCM0249 without issue on this project's GPU -- lower it if your GPU has
         # less headroom, e.g. via `--max_gaussians 4000000`.
         self.max_gaussians = 9_000_000
+        # PipelineParams.antialiasing (if enabled) is only actually applied in this trailing
+        # window of training, ramped in rather than switched on all at once -- see train.py's
+        # antialiasing_from_iter/antialiasing_progress. Two reasons, both observed in practice
+        # on public_set/HCM0181:
+        #   1. Flipping antialiasing on abruptly at densify_until_iter multiplies every
+        #      Gaussian's opacity by a compensation factor it was never trained against,
+        #      causing a sudden loss spike that then has to be re-optimized away.
+        #   2. The 2D-covariance opacity compensation (utils/antialiasing.py) is recomputed
+        #      from scratch every iteration for the *entire* point cloud in plain
+        #      PyTorch/Python (it's view-dependent -- a different random camera every
+        #      iteration -- so it can't be cached across iterations the way a per-iteration
+        #      constant could be). On a multi-million-Gaussian scene that's real, unavoidable
+        #      per-iteration overhead, so it's only paid for the last antialiasing_window
+        #      iterations rather than the entire post-densification tail.
+        self.antialiasing_window = 5_000
+        self.antialiasing_ramp_iters = 2_500
         self.random_background = False
         # Previously hard-coded as literals in train.py's densify_and_prune call; pulled out
         # here so they can be tuned per scene without editing code (e.g. tightening

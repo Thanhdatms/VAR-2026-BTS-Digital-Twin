@@ -31,7 +31,9 @@ _TARGET_ELEMENTS_PER_BATCH = 3_000_000  # bounds peak memory of the (B,H,W) inte
 
 
 def render_cpu(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0,
-                sh_degree_override=None, antialiasing=False):
+                sh_degree_override=None, antialiasing=0.0):
+    # antialiasing: 0.0/False disables it, 1.0/True is full compensation, values in between
+    # linearly blend toward it -- see gaussian_renderer/_cuda_backend.py's docstring.
     device = pc.get_xyz.device
     H, W = int(viewpoint_camera.image_height), int(viewpoint_camera.image_width)
     N = pc.get_xyz.shape[0]
@@ -72,7 +74,13 @@ def render_cpu(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.
     # (thin wires, high-frequency stripe textures). Compensate by scaling opacity down by
     # sqrt(det(true_cov)/det(dilated_cov)) so sub-pixel Gaussians contribute proportionally
     # less instead of being rendered as if they were pixel-sized.
-    aa_coef = mip_antialiasing_opacity_coef(a0, b0, c0) if antialiasing else None
+    _aa_strength = float(antialiasing)
+    if _aa_strength > 0.0:
+        aa_coef = mip_antialiasing_opacity_coef(a0, b0, c0)
+        if _aa_strength < 1.0:
+            aa_coef = (1.0 - _aa_strength) + _aa_strength * aa_coef
+    else:
+        aa_coef = None
 
     mid = 0.5 * (a + c)
     disc = (mid ** 2 - det).clamp(min=0.1)
