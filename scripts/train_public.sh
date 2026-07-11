@@ -32,5 +32,5 @@ python3 scripts/train_all.py \
   --skip_existing \
   -- \
   --save_iterations 7000 15000 30000 \
-  --val_interval 1000 \
+  --val_interval 5000 \
   "$@"

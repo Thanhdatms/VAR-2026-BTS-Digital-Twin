@@ -156,7 +156,7 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7000, 15000, 30000])
-    parser.add_argument("--val_interval", type=int, default=1000)
+    parser.add_argument("--val_interval", type=int, default=5000)
     parser.add_argument("--resolution_scale", type=float, default=1.0,
                          help="Divide image width/height by this factor. Only for local CPU "
                               "smoke runs (see utils/camera_utils.py) -- leave at 1.0 for any "
