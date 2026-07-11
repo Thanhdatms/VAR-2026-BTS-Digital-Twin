@@ -56,7 +56,9 @@ def validate(val_cameras, gaussians, background, iteration, antialiasing=False):
                 render(cam, gaussians, background, antialiasing=antialiasing)["render"], 0.0, 1.0)
             psnrs.append(psnr(image.unsqueeze(0), cam.original_image.unsqueeze(0)).mean().item())
     mean_psnr = sum(psnrs) / len(psnrs)
-    print(f"\n[iter {iteration}] validation PSNR over {len(psnrs)} held-out GT images: {mean_psnr:.2f}")
+    # tqdm.write (not print) so this doesn't break/duplicate the progress bar line -- same
+    # convention as the checkpoint-save message below, which is why that one prints cleanly.
+    tqdm.write(f"[iter {iteration}] validation PSNR over {len(psnrs)} held-out GT images: {mean_psnr:.2f}")
     return mean_psnr
 
 
