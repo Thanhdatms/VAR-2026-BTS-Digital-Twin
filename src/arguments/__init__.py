@@ -76,17 +76,21 @@ class PipelineParams(ParamGroup):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.debug = False
-        # Mip-Splatting-style 2D EWA filter, merged into the official repo's
-        # diff-gaussian-rasterization (colab_setup.sh clones the current default branch, which
-        # already has it). Without it, every Gaussian's screen-space covariance gets a fixed
-        # +0.3px dilation for numerical stability regardless of how small its true footprint
-        # is; that fixed dilation is what blurs out sub-pixel/high-frequency content (power
-        # line wires, corrugated-roof stripe patterns — see the 2026-07-12 artifact review).
-        # With antialiasing=True the rasterizer instead compensates opacity by
-        # sqrt(det(true_cov)/det(dilated_cov)) per Gaussian, so thin/high-freq primitives don't
-        # get uniformly smeared. MUST be set identically at train time and render time (a
-        # mismatch shifts brightness/opacity systematically) -- train.py and
-        # render_submission.py both read this same flag for that reason.
+        # Mip-Splatting-style opacity pre-compensation for the rasterizer's fixed screen-space
+        # dilation -- computed in Python (utils/antialiasing.py) before calling the vanilla
+        # diff-gaussian-rasterization kernel, NOT a kwarg on the kernel itself (verified by
+        # reading its source: GaussianRasterizationSettings has no 'antialiasing' field in the
+        # official graphdeco-inria build that colab_setup.sh clones -- that field belongs to
+        # the separate autonomousvision/mip-splatting fork, which needs a different submodule
+        # and persistent per-Gaussian state; we intentionally don't depend on it). Without this,
+        # every Gaussian's screen-space covariance gets a fixed +0.3px dilation for numerical
+        # stability regardless of how small its true footprint is; that fixed dilation is what
+        # blurs out sub-pixel/high-frequency content (power line wires, corrugated-roof stripe
+        # patterns — see the 2026-07-12 artifact review). With antialiasing=True, opacity is
+        # scaled by sqrt(det(true_cov)/det(dilated_cov)) per Gaussian before rasterizing, so
+        # thin/high-freq primitives don't get uniformly smeared. MUST be set identically at
+        # train time and render time (a mismatch shifts brightness/opacity systematically) --
+        # train.py and render_submission.py both read this same flag for that reason.
         self.antialiasing = True
         super().__init__(parser, "Pipeline Parameters")
 

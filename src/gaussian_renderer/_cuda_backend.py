@@ -7,14 +7,23 @@
 # under the terms of the LICENSE.md file.
 #
 # Ported from graphdeco-inria/gaussian-splatting (gaussian_renderer/__init__.py's render()),
-# unmodified logic — only renamed/isolated so gaussian_renderer/__init__.py can dispatch to
+# mostly unmodified — only renamed/isolated so gaussian_renderer/__init__.py can dispatch to
 # it (see that file's docstring). Requires the official `diff_gaussian_rasterization` CUDA
 # extension to be installed (Colab GPU runtime only — see scripts/colab_setup.sh).
+#
+# One deliberate addition: GaussianRasterizationSettings in the vanilla official build has no
+# 'antialiasing' field (verified by reading diff_gaussian_rasterization/__init__.py directly —
+# that API belongs to the separate autonomousvision/mip-splatting fork, which needs its own
+# rasterizer submodule and persistent per-Gaussian 3D filter state, not just a flag). Instead,
+# the `antialiasing` opacity pre-compensation is computed here in Python before calling the
+# unmodified rasterizer — see utils/antialiasing.py for why/what.
 
 import math
 import torch
 
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+
+from utils.antialiasing import compute_screenspace_cov2d, mip_antialiasing_opacity_coef
 
 
 def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0,
@@ -29,7 +38,7 @@ def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
-    settings_kwargs = dict(
+    raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
         tanfovx=tanfovx,
@@ -43,25 +52,21 @@ def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1
         prefiltered=False,
         debug=False,
     )
-    try:
-        raster_settings = GaussianRasterizationSettings(antialiasing=antialiasing, **settings_kwargs)
-    except TypeError:
-        # Installed diff_gaussian_rasterization predates the antialiasing kwarg (merged into
-        # the official repo mid-2024) -- fall back to the non-antialiased build rather than
-        # hard-crashing. Rebuild the submodule (scripts/colab_setup.sh) to pick it up.
-        if antialiasing:
-            print("[render_cuda] WARNING: installed diff_gaussian_rasterization has no "
-                  "'antialiasing' kwarg -- rebuild the submodule (scripts/colab_setup.sh) to "
-                  "use it. Rendering without antialiasing for now.")
-        raster_settings = GaussianRasterizationSettings(**settings_kwargs)
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+
+    opacities = pc.get_opacity
+    if antialiasing:
+        a0, b0, c0, _ = compute_screenspace_cov2d(
+            pc.get_xyz, pc.get_scaling, pc.get_rotation, viewpoint_camera, scaling_modifier)
+        aa_coef = mip_antialiasing_opacity_coef(a0, b0, c0).unsqueeze(-1)
+        opacities = opacities * aa_coef
 
     rendered_image, radii = rasterizer(
         means3D=pc.get_xyz,
         means2D=screenspace_points,
         shs=pc.get_features,
         colors_precomp=None,
-        opacities=pc.get_opacity,
+        opacities=opacities,
         scales=pc.get_scaling,
         rotations=pc.get_rotation,
         cov3D_precomp=None,

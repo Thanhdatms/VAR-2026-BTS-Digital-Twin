@@ -22,11 +22,10 @@ PLAN.md Phase 0 for the real (CUDA) training path.
 
 import torch
 
-from utils.general_utils import build_scaling_rotation
-from utils.graphics_utils import fov2focal
+from utils.antialiasing import (LOW_PASS_FILTER as _LOW_PASS_FILTER,
+                                 compute_screenspace_cov2d, mip_antialiasing_opacity_coef)
 from utils.sh_utils import eval_sh
 
-_LOW_PASS_FILTER = 0.3  # matches the antialiasing epsilon added to cov2d in the CUDA kernel
 _NEAR_PLANE = 0.2
 _TARGET_ELEMENTS_PER_BATCH = 3_000_000  # bounds peak memory of the (B,H,W) intermediate tensors
 
@@ -57,43 +56,23 @@ def render_cpu(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.
     py = ((ndc[:, 1] + 1.0) * H - 1.0) * 0.5 + screenspace_points[:, 1]
 
     # --- 3D covariance -> 2D screen-space covariance (EWA splatting Jacobian) ---
-    scales = pc.get_scaling
-    rotations = pc.get_rotation
-    L = build_scaling_rotation(scaling_modifier * scales, rotations)
-    Sigma3D = L @ L.transpose(1, 2)  # (N,3,3)
-
-    Wr = world_view[:3, :3]  # rotation part of world->view, row-vector convention
-    Sigma_view = torch.einsum('ab,nbc,cd->nad', Wr.t(), Sigma3D, Wr)
-
-    fx = fov2focal(viewpoint_camera.FoVx, W)
-    fy = fov2focal(viewpoint_camera.FoVy, H)
-    tz_safe = tz.clamp(min=1e-6)
-    J = torch.zeros(N, 3, 3, device=device, dtype=means3D.dtype)
-    J[:, 0, 0] = fx / tz_safe
-    J[:, 0, 2] = -fx * points_view[:, 0] / (tz_safe ** 2)
-    J[:, 1, 1] = fy / tz_safe
-    J[:, 1, 2] = -fy * points_view[:, 1] / (tz_safe ** 2)
-
-    Cov = torch.einsum('nab,nbc,ndc->nad', J, Sigma_view, J)  # J @ Sigma_view @ J^T
-    a0, b0, c0 = Cov[:, 0, 0], Cov[:, 0, 1], Cov[:, 1, 1]
+    # Shared with gaussian_renderer/_cuda_backend.py's antialiasing pre-compensation so both
+    # backends use identical math (see utils/antialiasing.py).
+    a0, b0, c0, _ = compute_screenspace_cov2d(
+        means3D, pc.get_scaling, pc.get_rotation, viewpoint_camera, scaling_modifier)
     a = a0 + _LOW_PASS_FILTER
     b = b0
     c = c0 + _LOW_PASS_FILTER
     det = (a * c - b * b).clamp(min=1e-8)
     inv_a, inv_b, inv_c = c / det, -b / det, a / det
 
-    # Mip-Splatting-style antialiasing (mirrors the CUDA kernel's `antialiasing` kwarg, see
-    # gaussian_renderer/_cuda_backend.py): the +_LOW_PASS_FILTER dilation above is a fixed
-    # per-Gaussian screen-space inflation applied for numerical stability, but it uniformly
-    # blurs any Gaussian whose true footprint is smaller than ~1px (thin wires, high-frequency
-    # stripe textures). Compensate by scaling opacity down by sqrt(det(true_cov)/det(dilated_cov))
-    # so sub-pixel Gaussians contribute proportionally less instead of being rendered as if
-    # they were pixel-sized.
-    if antialiasing:
-        det0 = (a0 * c0 - b0 * b0).clamp(min=0.0)
-        aa_coef = torch.sqrt((det0 / det).clamp(min=0.0, max=1.0))
-    else:
-        aa_coef = None
+    # Mip-Splatting-style antialiasing (see utils/antialiasing.py): the +_LOW_PASS_FILTER
+    # dilation above is a fixed per-Gaussian screen-space inflation applied for numerical
+    # stability, but it uniformly blurs any Gaussian whose true footprint is smaller than ~1px
+    # (thin wires, high-frequency stripe textures). Compensate by scaling opacity down by
+    # sqrt(det(true_cov)/det(dilated_cov)) so sub-pixel Gaussians contribute proportionally
+    # less instead of being rendered as if they were pixel-sized.
+    aa_coef = mip_antialiasing_opacity_coef(a0, b0, c0) if antialiasing else None
 
     mid = 0.5 * (a + c)
     disc = (mid ** 2 - det).clamp(min=0.1)
