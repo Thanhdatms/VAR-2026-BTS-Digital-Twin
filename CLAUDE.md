@@ -14,8 +14,10 @@ Kiến trúc & ngữ cảnh dự án cho cuộc thi AI "BTS Digital Twin (Novel 
 - `PSNR_max` dùng để chuẩn hóa chưa được ban tổ chức nêu giá trị cụ thể trong brief đã cung cấp → để làm
   hằng số cấu hình được (`--psnr_max`) trong `evaluate.py`, không hard-code.
 - Phần "7. Định dạng nộp bài" của brief không có trong nội dung được cung cấp (nhảy từ mục 6 sang mục 8) →
-  cấu trúc thư mục nộp bài (`scene_001/0001.png…`) trong yêu cầu là suy đoán hợp lý, cần đối chiếu lại với đề
-  bài gốc khi có. Xem giả định cụ thể ở §5.
+  cấu trúc thư mục nộp bài (`scene_001/0001.png…`) trong yêu cầu ban đầu là suy đoán, **đã được thay bằng
+  quy ước lấy trực tiếp từ README.txt của dataset** (không còn là giả định — xem §2 và §5): tên file ảnh =
+  `image_name` trong `test_poses.csv`, kích thước ảnh = đúng `width,height` trong cùng file (README ghi rõ
+  đây là "desired render resolution"). Tên thư mục scene vẫn dùng tên scene thật, xem giả định còn mở ở §5.
 
 ## 2. Dữ liệu thực tế (đã kiểm tra bằng cách đọc trực tiếp binary/CSV, không đoán)
 
@@ -40,6 +42,10 @@ Vị trí: `dataset/phase1/{private_set1,public_set}/<SCENE_ID>/`.
 - **public_set** (5 scene: HCM0181, HCM0193, HCM0204, hcm0031, hcm0034): có thêm `test/images/` với ảnh
   ground-truth thật → **đây là bộ validation nội bộ tốt nhất** để đo LPIPS/SSIM/PSNR thật trước khi nộp.
 - Cả hai bộ dùng chung README.txt: scale ảnh đã là 1/4 kích thước gốc, tỷ lệ train/test 80/20.
+- README.txt cũng định nghĩa rõ format `test_poses.csv`: `image_name` = "image filename" (dùng thẳng làm
+  tên file output, không tự đặt tên `0001.png`), `width,height` = "desired render resolution" (kích thước
+  ảnh render bắt buộc phải khớp, không phải theo độ phân giải ảnh train gốc). `render_submission.py` áp
+  dụng đúng hai điểm này (xem §5).
 
 ### 2.1 Camera model — điểm quan trọng nhất cần xử lý đúng
 
@@ -136,7 +142,8 @@ src/
 │   └── __init__.py           # ModelParams, PipelineParams, OptimizationParams — chưa có
 ├── train.py                  # SKELETON HIỆN TẠI RỖNG — training loop per-scene, port từ repo gốc
 ├── render_submission.py      # MỚI: đọc test_poses.csv trực tiếp (không phải COLMAP images.bin), render,
-│                              #   ghi ra <output>/<scene>/<NNNN>.png
+│                              #   ghi ra <output>/<scene>/<image_name gốc trong CSV>, kích thước = width,height
+│                              #   trong CSV; báo lỗi và exit non-zero nếu thiếu ảnh ở bất kỳ pose nào
 └── evaluate.py                # MỚI: so khớp renders với public_set ground-truth, tính LPIPS/SSIM/PSNR + score
 ```
 
@@ -156,17 +163,22 @@ src/
 | Camera model | PINHOLE/SIMPLE_PINHOLE only | SIMPLE_RADIAL (có méo) | Thêm bước undistort (§2.1) |
 | Test split | `--eval` + llffhold trên cùng thư mục ảnh | `test_poses.csv` riêng, **không có ảnh** (trừ public_set) | Đọc CSV trực tiếp, không dùng `is_test` từ COLMAP folder |
 | Convert/undistort | Chạy `convert.py` gọi COLMAP CLI | Không có COLMAP CLI cài sẵn, tự làm bằng OpenCV | `preprocess/undistort.py` |
-| Render script | `render.py` render lại train+test split có sẵn trong COLMAP | Phải render đúng theo `test_poses.csv`, đặt tên file theo yêu cầu nộp bài | `render_submission.py` (mới) |
+| Render script | `render.py` render lại train+test split có sẵn trong COLMAP | Phải render đúng theo `test_poses.csv`: tên file = `image_name`, kích thước = `width,height` trong CSV, và phải đủ ảnh cho **mọi** pose | `render_submission.py` (mới) |
 | Metrics | `metrics.py` (LPIPS/SSIM/PSNR không chuẩn hóa, không có công thức tổng hợp) | Cần đúng công thức `0.4*(1-LPIPS)+0.3*SSIM+0.3*psnr_norm`, `psnr_norm` có `PSNR_max` cấu hình | `evaluate.py` (mới) |
 | Nhiều scene | Thường train 1 scene/lần | 8 scene private + 5 scene public, mỗi scene train **độc lập** (3DGS không share weight giữa scene) | script orchestrate train tất cả scene tuần tự |
 
 **Giả định cần xác nhận lại với đề bài gốc (mục 7 bị thiếu trong brief đã cung cấp):**
 - Tên thư mục output: dùng tên scene thật (`HCM0249/`, …) hay `scene_001/`, `scene_002/` theo thứ tự nào?
   Baseline sẽ mặc định dùng **tên scene thật** làm tên thư mục (dễ truy vết hơn), có thể đổi bằng config.
-- Thứ tự/tên file ảnh trong mỗi scene (`0001.png`, `0002.png`, …): mặc định đánh số theo **thứ tự dòng
-  trong `test_poses.csv`** (1-indexed, zero-pad 4 chữ số) và luôn kèm file `index_map.json` map
-  `NNNN.png -> image_name gốc` để dễ đối chiếu/debug — không tự tin thứ tự này khớp 100% với thứ tự
-  ground-truth phía ban tổ chức chấm, cần xác nhận.
+  **Vẫn là giả định mở** — chưa có xác nhận từ ban tổ chức.
+- ~~Thứ tự/tên file ảnh trong mỗi scene~~ — **đã giải quyết, không còn là giả định**: README.txt của dataset
+  ghi rõ `image_name` trong `test_poses.csv` là "image filename", nên `render_submission.py` dùng thẳng
+  `image_name` gốc làm tên file output (không tự đặt `0001.png`, không cần `index_map.json` nữa vì tên file
+  render và tên gốc giờ là một). Tương tự, `width,height` trong CSV được README ghi là "desired render
+  resolution" nên script assert kích thước ảnh render phải khớp chính xác, không suy đoán theo độ phân giải
+  ảnh train. Script còn kiểm tra đủ ảnh cho **mọi** pose trong CSV (không thiếu ảnh nào) và exit non-zero nếu
+  thiếu, vì điểm mỗi scene là trung bình trên toàn bộ pose test — thiếu 1 ảnh vẫn kéo điểm cả scene xuống dù
+  không phải "thiếu scene" theo nghĩa ở §1.
 - `PSNR_max` dùng để chuẩn hóa: chưa có giá trị cụ thể từ đề bài → để làm tham số cấu hình, không hard-code.
 
 ## 6. Quy ước code/tooling

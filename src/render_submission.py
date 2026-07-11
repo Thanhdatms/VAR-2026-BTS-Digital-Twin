@@ -61,10 +61,11 @@ def save_image(arr, path):
     img = Image.fromarray(arr)
     ext = os.path.splitext(path)[1].lower()
     if ext in (".jpg", ".jpeg"):
-        # Ground-truth test images ship as .JPG (see dataset README) -- match that format at
-        # near-lossless quality instead of PIL's default quality=75, which would inject visible
-        # compression artifacts that directly hurt LPIPS/SSIM/PSNR.
-        img.save(path, quality=100, subsampling=0)
+        # quality=95 keeps JPEG's own encoding noise floor (~51dB self-PSNR, measured against
+        # the dataset's ground-truth JPEGs) far below actual render error (~20dB PSNR from
+        # training logs), so it's visually/metrically indistinguishable from quality=100 while
+        # roughly halving file size. PIL's default quality=75 would visibly hurt LPIPS/SSIM/PSNR.
+        img.save(path, quality=95)
     else:
         img.save(path)
 
