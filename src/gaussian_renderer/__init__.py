@@ -17,8 +17,15 @@ train.py / render_submission.py should only ever call `render()` from this modul
 import torch
 
 
-def render(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0, sh_degree_override=None):
-    """Returns a dict with keys: render (3,H,W), viewspace_points, visibility_filter, radii."""
+def render(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0,
+           sh_degree_override=None, antialiasing=False):
+    """Returns a dict with keys: render (3,H,W), viewspace_points, visibility_filter, radii.
+
+    antialiasing: Mip-Splatting-style opacity compensation for the fixed screen-space
+        dilation (see PipelineParams.antialiasing in arguments/__init__.py for why this
+        matters). Must match between the render() calls used for training and the ones used
+        for submission rendering, or output brightness/opacity will be systematically off.
+    """
     device = pc.get_xyz.device
 
     if device.type == "cuda":
@@ -30,7 +37,9 @@ def render(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0, s
                 "installed. On a Colab GPU runtime, build the official submodules first "
                 "(see scripts/colab_setup.sh / PLAN.md Phase 0)."
             ) from e
-        return render_cuda(viewpoint_camera, pc, bg_color, scaling_modifier, sh_degree_override)
+        return render_cuda(viewpoint_camera, pc, bg_color, scaling_modifier,
+                            sh_degree_override, antialiasing)
 
     from gaussian_renderer.cpu_rasterizer import render_cpu
-    return render_cpu(viewpoint_camera, pc, bg_color, scaling_modifier, sh_degree_override)
+    return render_cpu(viewpoint_camera, pc, bg_color, scaling_modifier,
+                       sh_degree_override, antialiasing)

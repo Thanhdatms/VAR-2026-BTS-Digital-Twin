@@ -48,11 +48,12 @@ def find_public_gt_images_dir(source_path):
     return d if os.path.isdir(d) else None
 
 
-def validate(val_cameras, gaussians, background, iteration):
+def validate(val_cameras, gaussians, background, iteration, antialiasing=False):
     psnrs = []
     with torch.no_grad():
         for cam in val_cameras:
-            image = torch.clamp(render(cam, gaussians, background)["render"], 0.0, 1.0)
+            image = torch.clamp(
+                render(cam, gaussians, background, antialiasing=antialiasing)["render"], 0.0, 1.0)
             psnrs.append(psnr(image.unsqueeze(0), cam.original_image.unsqueeze(0)).mean().item())
     mean_psnr = sum(psnrs) / len(psnrs)
     print(f"\n[iter {iteration}] validation PSNR over {len(psnrs)} held-out GT images: {mean_psnr:.2f}")
@@ -101,7 +102,7 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
-        render_pkg = render(viewpoint_cam, gaussians, background)
+        render_pkg = render(viewpoint_cam, gaussians, background, antialiasing=pipe.antialiasing)
         image = render_pkg["render"]
         gt_image = viewpoint_cam.original_image
 
@@ -125,8 +126,9 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
                 gaussians.add_densification_stats(render_pkg["viewspace_points"], vis_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005,
+                    size_threshold = (opt.densify_max_screen_size
+                                       if iteration > opt.opacity_reset_interval else None)
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, opt.min_opacity_prune,
                                                  scene.cameras_extent, size_threshold)
 
                 if iteration % opt.opacity_reset_interval == 0 or (
@@ -137,7 +139,7 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
             gaussians.optimizer.zero_grad(set_to_none=True)
 
             if val_cameras and (iteration % val_interval == 0 or iteration == opt.iterations):
-                validate(val_cameras, gaussians, background, iteration)
+                validate(val_cameras, gaussians, background, iteration, antialiasing=pipe.antialiasing)
 
             if iteration in save_iterations or iteration == opt.iterations:
                 tqdm.write(f"[iter {iteration}] saving checkpoint ({gaussians.get_xyz.shape[0]} gaussians)")

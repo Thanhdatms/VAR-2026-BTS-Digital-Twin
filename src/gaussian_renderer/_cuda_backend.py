@@ -17,7 +17,8 @@ import torch
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
 
-def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0, sh_degree_override=None):
+def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0,
+                 sh_degree_override=None, antialiasing=False):
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype,
                                            requires_grad=True, device=pc.get_xyz.device)
     try:
@@ -28,7 +29,7 @@ def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
-    raster_settings = GaussianRasterizationSettings(
+    settings_kwargs = dict(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
         tanfovx=tanfovx,
@@ -42,6 +43,17 @@ def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1
         prefiltered=False,
         debug=False,
     )
+    try:
+        raster_settings = GaussianRasterizationSettings(antialiasing=antialiasing, **settings_kwargs)
+    except TypeError:
+        # Installed diff_gaussian_rasterization predates the antialiasing kwarg (merged into
+        # the official repo mid-2024) -- fall back to the non-antialiased build rather than
+        # hard-crashing. Rebuild the submodule (scripts/colab_setup.sh) to pick it up.
+        if antialiasing:
+            print("[render_cuda] WARNING: installed diff_gaussian_rasterization has no "
+                  "'antialiasing' kwarg -- rebuild the submodule (scripts/colab_setup.sh) to "
+                  "use it. Rendering without antialiasing for now.")
+        raster_settings = GaussianRasterizationSettings(**settings_kwargs)
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
     rendered_image, radii = rasterizer(

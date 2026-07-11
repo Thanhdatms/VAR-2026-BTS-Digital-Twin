@@ -31,7 +31,8 @@ _NEAR_PLANE = 0.2
 _TARGET_ELEMENTS_PER_BATCH = 3_000_000  # bounds peak memory of the (B,H,W) intermediate tensors
 
 
-def render_cpu(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0, sh_degree_override=None):
+def render_cpu(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0,
+                sh_degree_override=None, antialiasing=False):
     device = pc.get_xyz.device
     H, W = int(viewpoint_camera.image_height), int(viewpoint_camera.image_width)
     N = pc.get_xyz.shape[0]
@@ -74,11 +75,25 @@ def render_cpu(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.
     J[:, 1, 2] = -fy * points_view[:, 1] / (tz_safe ** 2)
 
     Cov = torch.einsum('nab,nbc,ndc->nad', J, Sigma_view, J)  # J @ Sigma_view @ J^T
-    a = Cov[:, 0, 0] + _LOW_PASS_FILTER
-    b = Cov[:, 0, 1]
-    c = Cov[:, 1, 1] + _LOW_PASS_FILTER
+    a0, b0, c0 = Cov[:, 0, 0], Cov[:, 0, 1], Cov[:, 1, 1]
+    a = a0 + _LOW_PASS_FILTER
+    b = b0
+    c = c0 + _LOW_PASS_FILTER
     det = (a * c - b * b).clamp(min=1e-8)
     inv_a, inv_b, inv_c = c / det, -b / det, a / det
+
+    # Mip-Splatting-style antialiasing (mirrors the CUDA kernel's `antialiasing` kwarg, see
+    # gaussian_renderer/_cuda_backend.py): the +_LOW_PASS_FILTER dilation above is a fixed
+    # per-Gaussian screen-space inflation applied for numerical stability, but it uniformly
+    # blurs any Gaussian whose true footprint is smaller than ~1px (thin wires, high-frequency
+    # stripe textures). Compensate by scaling opacity down by sqrt(det(true_cov)/det(dilated_cov))
+    # so sub-pixel Gaussians contribute proportionally less instead of being rendered as if
+    # they were pixel-sized.
+    if antialiasing:
+        det0 = (a0 * c0 - b0 * b0).clamp(min=0.0)
+        aa_coef = torch.sqrt((det0 / det).clamp(min=0.0, max=1.0))
+    else:
+        aa_coef = None
 
     mid = 0.5 * (a + c)
     disc = (mid ** 2 - det).clamp(min=0.1)
@@ -98,7 +113,10 @@ def render_cpu(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.
         idx = valid.nonzero(as_tuple=True)[0]
         radii_full[idx] = radius[idx]
 
-        opacity = pc.get_opacity.squeeze(-1)[idx].clamp(max=0.9999)
+        opacity = pc.get_opacity.squeeze(-1)[idx]
+        if aa_coef is not None:
+            opacity = opacity * aa_coef[idx]
+        opacity = opacity.clamp(max=0.9999)
         campos = viewpoint_camera.camera_center
         dirs = means3D[idx] - campos
         dirs = dirs / dirs.norm(dim=1, keepdim=True).clamp(min=1e-8)

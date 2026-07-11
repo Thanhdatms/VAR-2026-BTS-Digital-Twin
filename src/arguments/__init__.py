@@ -36,7 +36,15 @@ class ParamGroup:
                     group.add_argument("--" + key, "-" + key[0:1], default=value, type=t)
             else:
                 if t == bool:
-                    group.add_argument("--" + key, default=value, action="store_true")
+                    if value:
+                        # Ported from upstream, which only ever had default=False bool flags
+                        # (store_true). PipelineParams.antialiasing defaults to True, where
+                        # store_true would be a no-op (already True, and passing --antialiasing
+                        # can't turn it off) -- generate a --no_<key> switch instead so it's
+                        # actually possible to disable via CLI for A/B comparisons.
+                        group.add_argument("--no_" + key, dest=key, default=True, action="store_false")
+                    else:
+                        group.add_argument("--" + key, default=value, action="store_true")
                 else:
                     group.add_argument("--" + key, default=value, type=t)
 
@@ -68,6 +76,18 @@ class PipelineParams(ParamGroup):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.debug = False
+        # Mip-Splatting-style 2D EWA filter, merged into the official repo's
+        # diff-gaussian-rasterization (colab_setup.sh clones the current default branch, which
+        # already has it). Without it, every Gaussian's screen-space covariance gets a fixed
+        # +0.3px dilation for numerical stability regardless of how small its true footprint
+        # is; that fixed dilation is what blurs out sub-pixel/high-frequency content (power
+        # line wires, corrugated-roof stripe patterns — see the 2026-07-12 artifact review).
+        # With antialiasing=True the rasterizer instead compensates opacity by
+        # sqrt(det(true_cov)/det(dilated_cov)) per Gaussian, so thin/high-freq primitives don't
+        # get uniformly smeared. MUST be set identically at train time and render time (a
+        # mismatch shifts brightness/opacity systematically) -- train.py and
+        # render_submission.py both read this same flag for that reason.
+        self.antialiasing = True
         super().__init__(parser, "Pipeline Parameters")
 
 
@@ -87,7 +107,21 @@ class OptimizationParams(ParamGroup):
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
+        # Extended from the upstream default (15_000) and densify_grad_threshold halved: BTS
+        # towers/antenna panels/guy wires are thin, low-SfM-coverage structures that need more
+        # densification cycles and a lower gradient bar to spawn enough small Gaussians to
+        # represent them sharply (vanilla settings tend to leave them as few large, blurry
+        # Gaussians -- see the 2026-07-12 artifact review for the specific failure images).
+        # Raising --iterations further (e.g. 40_000) for tower-heavy scenes is recommended;
+        # if you do, also raise --position_lr_max_steps and --densify_until_iter to match, or
+        # the position LR schedule / densification window will end early relative to training.
+        self.densify_until_iter = 20_000
+        self.densify_grad_threshold = 0.00008
         self.random_background = False
+        # Previously hard-coded as literals in train.py's densify_and_prune call; pulled out
+        # here so they can be tuned per scene without editing code (e.g. tightening
+        # densify_max_screen_size helps prune the large, under-constrained Gaussians that cause
+        # blur in far/sparsely-covered image corners).
+        self.min_opacity_prune = 0.005
+        self.densify_max_screen_size = 20
         super().__init__(parser, "Optimization Parameters")
