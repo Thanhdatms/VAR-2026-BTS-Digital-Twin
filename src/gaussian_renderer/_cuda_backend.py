@@ -61,11 +61,23 @@ def render_cuda(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1
     opacities = pc.get_opacity
     strength = float(antialiasing)
     if strength > 0.0:
-        a0, b0, c0, _ = compute_screenspace_cov2d(
-            pc.get_xyz, pc.get_scaling, pc.get_rotation, viewpoint_camera, scaling_modifier)
-        aa_coef = mip_antialiasing_opacity_coef(a0, b0, c0).unsqueeze(-1)
-        if strength < 1.0:
-            aa_coef = (1.0 - strength) + strength * aa_coef
+        # detach(): mip_antialiasing_opacity_coef involves sqrt(det0/det), whose gradient blows
+        # up as det0 (the *undilated* 2D covariance determinant) approaches 0 -- which is
+        # exactly what happens for the thin, disk-like Gaussians a well-converged 3DGS scene is
+        # full of (surfaces are represented as near-degenerate flat splats). Left attached, that
+        # gradient reaches back through pc.get_scaling/get_rotation/get_xyz and can explode,
+        # corrupting the optimizer state irrecoverably (observed: public_set/hcm0031 loss
+        # jumped 0.04 -> 0.23 at iteration 26000 -- mid-ramp -- and never recovered by 30000,
+        # unlike the opacity-reset dips elsewhere in the same log, which self-heal in <2000
+        # iters). Detaching keeps this a pure per-render opacity multiplier: gradient still
+        # flows into the learnable `opacity` parameter itself (which is what should adapt to
+        # compensate), just not through this secondary, numerically fragile path into geometry.
+        with torch.no_grad():
+            a0, b0, c0, _ = compute_screenspace_cov2d(
+                pc.get_xyz, pc.get_scaling, pc.get_rotation, viewpoint_camera, scaling_modifier)
+            aa_coef = mip_antialiasing_opacity_coef(a0, b0, c0).unsqueeze(-1)
+            if strength < 1.0:
+                aa_coef = (1.0 - strength) + strength * aa_coef
         opacities = opacities * aa_coef
 
     rendered_image, radii = rasterizer(

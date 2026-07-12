@@ -74,9 +74,18 @@ def render_cpu(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.
     # (thin wires, high-frequency stripe textures). Compensate by scaling opacity down by
     # sqrt(det(true_cov)/det(dilated_cov)) so sub-pixel Gaussians contribute proportionally
     # less instead of being rendered as if they were pixel-sized.
+    #
+    # a0/b0/c0 detached here (only for this coefficient -- the `a,b,c,det,inv_*` above stay
+    # attached, they're the main rendering pathway and need real gradients): the coefficient's
+    # sqrt(det0/det) has a gradient that blows up as det0 (undilated covariance determinant)
+    # approaches 0, which is routine for the thin, disk-like Gaussians a well-converged 3DGS
+    # scene is full of. Left attached, that can explode through get_scaling/get_rotation/get_xyz
+    # and corrupt training irrecoverably (see gaussian_renderer/_cuda_backend.py for the
+    # observed failure). Detaching keeps it a pure opacity multiplier -- gradient still reaches
+    # the learnable opacity parameter via the multiplication below, just not this fragile path.
     _aa_strength = float(antialiasing)
     if _aa_strength > 0.0:
-        aa_coef = mip_antialiasing_opacity_coef(a0, b0, c0)
+        aa_coef = mip_antialiasing_opacity_coef(a0.detach(), b0.detach(), c0.detach())
         if _aa_strength < 1.0:
             aa_coef = (1.0 - _aa_strength) + _aa_strength * aa_coef
     else:
