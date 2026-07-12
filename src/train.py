@@ -128,8 +128,8 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005,
-                                                 scene.cameras_extent, size_threshold)
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, opt.densify_grad_abs_threshold,
+                                                 0.005, scene.cameras_extent, size_threshold)
 
                 if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter):

@@ -71,6 +71,11 @@ class GaussianModel:
         self._opacity = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
+        # Homodirectional ("abs") gradient accumulator, AbsGS (arXiv:2404.10484). Only
+        # meaningful when the render backend is gaussian_renderer/_cuda_backend_abs.py (see
+        # its module docstring) -- add_densification_stats() falls back to reusing the normal
+        # gradient here for any other backend, so this is always safe to accumulate into.
+        self.xyz_gradient_accum_abs = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
@@ -160,6 +165,7 @@ class GaussianModel:
         device = self.get_xyz.device
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device=device)
+        self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device=device)
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device=device)
 
         l = [
@@ -312,6 +318,7 @@ class GaussianModel:
         self._rotation = optimizable_tensors["rotation"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
+        self.xyz_gradient_accum_abs = self.xyz_gradient_accum_abs[valid_points_mask]
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
@@ -352,6 +359,7 @@ class GaussianModel:
 
         device = self.get_xyz.device
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device=device)
+        self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device=device)
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device=device)
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device=device)
 
@@ -395,12 +403,23 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, max_grad_abs, min_opacity, extent, max_screen_size):
+        # Clone (small Gaussians, grow the population) still gates on the normal gradient;
+        # split (large Gaussians already covering detail) gates on the abs/homodirectional
+        # gradient instead -- this is AbsGS's fix (arXiv:2404.10484) for "gradient collision":
+        # a large Gaussian smearing over a thin wire or a high-frequency stripe pattern has
+        # per-pixel gradients pointing in different directions that cancel in the signed sum
+        # (self.xyz_gradient_accum), so it never trips max_grad and never gets split. The abs
+        # sum (self.xyz_gradient_accum_abs) can't cancel, so it stays a reliable split signal
+        # even when the signed sum is near zero. See gaussian_renderer/_cuda_backend_abs.py.
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
+        grads_abs = self.xyz_gradient_accum_abs / self.denom
+        grads_abs[grads_abs.isnan()] = 0.0
+
         self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
+        self.densify_and_split(grads_abs, max_grad_abs, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
@@ -413,6 +432,16 @@ class GaussianModel:
             torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        self.xyz_gradient_accum[update_filter] += torch.norm(
-            viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True)
+        grad = viewspace_point_tensor.grad
+        self.xyz_gradient_accum[update_filter] += torch.norm(grad[update_filter, :2], dim=-1, keepdim=True)
+        if grad.shape[1] >= 4:
+            # AbsGS backend: channels 2:4 are the homodirectional (abs) gradient.
+            self.xyz_gradient_accum_abs[update_filter] += torch.norm(
+                grad[update_filter, 2:4], dim=-1, keepdim=True)
+        else:
+            # Official/CPU backend has no abs-gradient channel -- reuse the normal gradient so
+            # densify_and_split() degrades to vanilla single-threshold behavior instead of never
+            # splitting (grads_abs would otherwise stay all-zero and never cross the threshold).
+            self.xyz_gradient_accum_abs[update_filter] += torch.norm(
+                grad[update_filter, :2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1

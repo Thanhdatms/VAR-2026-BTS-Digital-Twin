@@ -58,6 +58,45 @@ if python3 -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1
 
     pip install -v submodules/diff-gaussian-rasterization
     python3 -c "from diff_gaussian_rasterization import GaussianRasterizer; print('diff_gaussian_rasterization: OK')"
+
+    echo "== Building the AbsGS rasterizer (arXiv:2404.10484, optional) =="
+    echo "   Fixes 'gradient collision' blur on thin structures (BTS wires) and high-frequency"
+    echo "   patterns (striped/corrugated roofs) by also densifying on an abs-value screen-space"
+    echo "   gradient that can't cancel out the way the signed one does. Preferred automatically"
+    echo "   by gaussian_renderer/__init__.py when present; best-effort here -- if this fails,"
+    echo "   training still proceeds on the official rasterizer built above."
+    #
+    # AbsGS isn't a standalone repo: its patched rasterizer lives as a subdirectory inside the
+    # TY424/AbsGS fork of the full gaussian-splatting repo (verified by inspecting that repo's
+    # tree -- submodules/diff-gaussian-rasterization-abs is a real checked-in directory there,
+    # not a git submodule pointer), so shallow-clone the whole fork and lift just that
+    # subdirectory instead of `git clone`-ing a rasterizer repo directly.
+    if [ ! -d submodules/diff-gaussian-rasterization-abs ]; then
+        rm -rf /tmp/absgs_src
+        if git clone --recursive --depth 1 https://github.com/TY424/AbsGS.git /tmp/absgs_src; then
+            cp -r /tmp/absgs_src/submodules/diff-gaussian-rasterization-abs submodules/diff-gaussian-rasterization-abs
+        else
+            echo "   WARNING: could not fetch TY424/AbsGS -- continuing with the official rasterizer only."
+        fi
+        rm -rf /tmp/absgs_src
+    fi
+
+    if [ -d submodules/diff-gaussian-rasterization-abs ]; then
+        # Same missing-<cstdint>-include issue as the official rasterizer (see the sed above),
+        # same fix.
+        ABS_RASTERIZER_IMPL_H="submodules/diff-gaussian-rasterization-abs/cuda_rasterizer/rasterizer_impl.h"
+        if [ -f "$ABS_RASTERIZER_IMPL_H" ] && ! grep -q '#include <cstdint>' "$ABS_RASTERIZER_IMPL_H"; then
+            sed -i '1i #include <cstdint>' "$ABS_RASTERIZER_IMPL_H"
+        fi
+
+        if pip install -v submodules/diff-gaussian-rasterization-abs && \
+           python3 -c "from diff_gaussian_rasterization_abs import GaussianRasterizer; print('diff_gaussian_rasterization_abs: OK')"; then
+            echo "   AbsGS rasterizer built OK -- will be used automatically for training/rendering."
+        else
+            echo "   WARNING: AbsGS rasterizer build failed -- continuing with the official rasterizer only"
+            echo "   (training still works, just without the abs-gradient densification fix)."
+        fi
+    fi
 else
     echo "== No CUDA GPU detected: skipping the CUDA rasterizer build =="
     echo "   Training/rendering will use gaussian_renderer/cpu_rasterizer.py (slow reference path)."

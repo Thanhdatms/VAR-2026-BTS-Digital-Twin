@@ -101,6 +101,16 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 20_000
         self.densify_grad_threshold = 0.00015
+        # Split threshold when the AbsGS rasterizer backend is active (see
+        # gaussian_renderer/_cuda_backend_abs.py) -- gates on the homodirectional/abs gradient
+        # instead of the signed one used for densify_grad_threshold (clone). AbsGS's own repo
+        # pairs percent_dense=0.001/densify_grad_threshold=0.0002 with
+        # densify_grad_abs_threshold=0.0004 (2x); scaled here to match our already-lowered
+        # densify_grad_threshold=0.00015. Falls back to being compared against the same (normal)
+        # gradient as densify_grad_threshold on backends without an abs channel (official CUDA /
+        # CPU) -- see GaussianModel.add_densification_stats -- so it's always active, not
+        # AbsGS-only.
+        self.densify_grad_abs_threshold = 0.0003
         self.random_background = False
         # Optional heuristic regularization (off by default, not from a specific paper): mean
         # per-Gaussian max-scale penalty, discouraging large "sheet" Gaussians from smearing
