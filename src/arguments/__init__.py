@@ -38,10 +38,11 @@ class ParamGroup:
                 if t == bool:
                     if value:
                         # Ported from upstream, which only ever had default=False bool flags
-                        # (store_true). PipelineParams.antialiasing defaults to True, where
-                        # store_true would be a no-op (already True, and passing --antialiasing
-                        # can't turn it off) -- generate a --no_<key> switch instead so it's
-                        # actually possible to disable via CLI for A/B comparisons.
+                        # (store_true). Any ParamGroup bool that defaults to True (none currently
+                        # -- PipelineParams.antialiasing was the motivating case but now defaults
+                        # to False, see its docstring) would make plain store_true a no-op, so
+                        # generate a --no_<key> switch instead so it's actually possible to
+                        # disable via CLI for A/B comparisons.
                         group.add_argument("--no_" + key, dest=key, default=True, action="store_false")
                     else:
                         group.add_argument("--" + key, default=value, action="store_true")
@@ -96,7 +97,25 @@ class PipelineParams(ParamGroup):
         # 0 crushes the whole scene's visibility before densification can grow points to a
         # sane size (measured: tanked validation PSNR early in training). See train.py's
         # `use_antialiasing` for the exact gating and the numbers that motivated it.
-        self.antialiasing = True
+        #
+        # DEFAULTED OFF (2026-07-12 re-review): confirmed on a private_set1 run (224_928 init
+        # points, densify_until_iter=20_000, antialiasing_window=5_000) that ramping antialiasing
+        # in AFTER densify_until_iter is not just a transient dip -- validation PSNR collapsed
+        # 20.24 -> 12.72 -> 13.51 -> 13.72 (iters 24000/26000/28000/30000) and train loss kept
+        # climbing (0.05 -> 0.19 -> 0.22 -> 0.224), i.e. it never recovered by the end of
+        # training. Root cause: once densify_until_iter passes, densify_and_prune stops running,
+        # so there is no structural mechanism (prune/clone/split) left to react when the
+        # opacity-compensation coefficient collapses toward 0 for the thin/near-degenerate
+        # Gaussians that make up most of a converged scene -- gradient descent on existing
+        # Gaussians alone can't absorb that scale of distribution shift in the few thousand
+        # iterations left. This is distinct from (and much worse than) the periodic
+        # opacity_reset_interval dips, which self-heal within ~1-2k iters because densification
+        # is still active when they happen. Re-enable only after fixing the scheduling (e.g.
+        # overlapping the ramp with the tail of the active densify_until_iter window instead of
+        # starting after it) and re-validating -- until then, leave this False so
+        # train_all.py / train.py runs are safe by default. Pass --antialiasing explicitly to
+        # opt back in for testing.
+        self.antialiasing = False
         super().__init__(parser, "Pipeline Parameters")
 
 

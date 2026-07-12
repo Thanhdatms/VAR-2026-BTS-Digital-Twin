@@ -71,7 +71,7 @@ def save_image(arr, path):
 
 
 def render_scene(scene_source_path, model_path, output_root, sh_degree=3, iteration=None,
-                  device=torch.device("cpu"), white_background=False, antialiasing=True):
+                  device=torch.device("cpu"), white_background=False, antialiasing=False):
     scene_name = os.path.basename(os.path.normpath(scene_source_path))
     ckpt_path, loaded_it = find_checkpoint(model_path, iteration)
     print(f"[{scene_name}] loading checkpoint iter {loaded_it}: {ckpt_path}")
@@ -136,11 +136,14 @@ if __name__ == "__main__":
     parser.add_argument("--sh_degree", type=int, default=3)
     parser.add_argument("--white_background", action="store_true")
     parser.add_argument("--data_device", type=str, default="cuda")
-    parser.add_argument("--no_antialiasing", action="store_true",
-                         help="Disable the Mip-Splatting-style antialiasing filter (default: "
-                              "enabled). MUST match whatever --antialiasing setting was used "
-                              "for training this checkpoint (arguments.PipelineParams), or "
-                              "renders will have a systematic brightness/opacity mismatch.")
+    parser.add_argument("--antialiasing", action="store_true",
+                         help="Enable the Mip-Splatting-style antialiasing filter (default: "
+                              "disabled -- see arguments.PipelineParams.antialiasing for why: "
+                              "the current ramp schedule caused an unrecovered training "
+                              "collapse and is off by default until that's fixed). MUST match "
+                              "whatever --antialiasing setting was used for training this "
+                              "checkpoint, or renders will have a systematic brightness/opacity "
+                              "mismatch.")
     args = parser.parse_args()
 
     device = pick_device(args.data_device)
@@ -154,7 +157,7 @@ if __name__ == "__main__":
             render_scene(scene_path, os.path.join(args.models_root, scene_name), args.output_root,
                          sh_degree=args.sh_degree, iteration=args.iteration, device=device,
                          white_background=args.white_background,
-                         antialiasing=not args.no_antialiasing)
+                         antialiasing=args.antialiasing)
         except RuntimeError as e:
             print(e)
             incomplete_scenes.append(scene_name)
