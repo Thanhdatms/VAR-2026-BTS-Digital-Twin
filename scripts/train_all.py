@@ -44,6 +44,7 @@ def main():
     scenes = args.scenes or discover_scenes(args.dataset_root)
     print(f"Training {len(scenes)} scene(s): {scenes}")
 
+    failed = []
     for scene in scenes:
         source_path = os.path.join(args.dataset_root, scene)
         model_path = os.path.join(args.output_root, scene)
@@ -58,7 +59,21 @@ def main():
                "--data_device", args.data_device,
                "--iterations", str(args.iterations)] + extra
         print(f"\n=== [{scene}] {' '.join(cmd)} ===")
-        subprocess.run(cmd, check=True)
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            # A crash in one scene's subprocess (e.g. CUDA OOM) must not stop the remaining
+            # scenes from training -- each scene is an independent fresh process/GPU context
+            # (see module docstring), so there's no reason a single failure should abort the
+            # whole multi-scene batch and silently skip every scene after it.
+            print(f"[{scene}] FAILED (exit code {e.returncode}) -- continuing with remaining scenes")
+            failed.append(scene)
+
+    if failed:
+        sys.exit(f"\n[train_all] {len(failed)}/{len(scenes)} scene(s) failed: {failed} "
+                  f"-- rerun with --scenes {' '.join(failed)} --skip_existing after fixing "
+                  f"the cause (see each scene's error above).")
+    print(f"\n[train_all] all {len(scenes)} scene(s) completed.")
 
 
 if __name__ == "__main__":

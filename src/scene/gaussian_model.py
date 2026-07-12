@@ -403,7 +403,8 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, max_grad_abs, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, max_grad_abs, min_opacity, extent, max_screen_size,
+                           skip_densify=False):
         # Clone (small Gaussians, grow the population) still gates on the normal gradient;
         # split (large Gaussians already covering detail) gates on the abs/homodirectional
         # gradient instead -- this is AbsGS's fix (arXiv:2404.10484) for "gradient collision":
@@ -412,14 +413,20 @@ class GaussianModel:
         # (self.xyz_gradient_accum), so it never trips max_grad and never gets split. The abs
         # sum (self.xyz_gradient_accum_abs) can't cancel, so it stays a reliable split signal
         # even when the signed sum is near zero. See gaussian_renderer/_cuda_backend_abs.py.
-        grads = self.xyz_gradient_accum / self.denom
-        grads[grads.isnan()] = 0.0
+        #
+        # skip_densify=True (from train.py's --max_gaussians safety valve) skips clone/split
+        # but still runs the opacity/screen-size pruning below -- lets the population shrink
+        # back down instead of growing unboundedly once the cap is hit, without changing what
+        # counts as prunable.
+        if not skip_densify:
+            grads = self.xyz_gradient_accum / self.denom
+            grads[grads.isnan()] = 0.0
 
-        grads_abs = self.xyz_gradient_accum_abs / self.denom
-        grads_abs[grads_abs.isnan()] = 0.0
+            grads_abs = self.xyz_gradient_accum_abs / self.denom
+            grads_abs[grads_abs.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads_abs, max_grad_abs, extent)
+            self.densify_and_clone(grads, max_grad, extent)
+            self.densify_and_split(grads_abs, max_grad_abs, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:

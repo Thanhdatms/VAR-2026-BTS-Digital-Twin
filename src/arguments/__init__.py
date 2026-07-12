@@ -118,4 +118,14 @@ class OptimizationParams(ParamGroup):
         # small values (e.g. 0.001-0.01) on public_set before trusting it -- an untested weight
         # can just as easily blur small-scale detail by over-shrinking everything.
         self.lambda_scale_reg = 0.0
+        # Hard safety cap on Gaussian count (0 = unlimited, upstream default behavior). Added
+        # after a real CUDA OOM on HCM0249 (165,726 init points) at iter ~19100/35000: the
+        # lowered percent_dense/densify_grad_threshold (Tier 1) plus AbsGS's extra abs-gradient
+        # split criterion grow the population noticeably faster than vanilla 3DGS, and a single
+        # scene OOM-ing wastes real GPU time. Once get_xyz.shape[0] >= max_gaussians, train.py
+        # skips clone/split for that densification step (opacity/screen-size pruning still
+        # runs), capping growth instead of crashing. Tune to your GPU's headroom -- e.g. on a
+        # ~32GB card, 2_500_000-3_000_000 is a reasonable starting point for this dataset's
+        # scene sizes.
+        self.max_gaussians = 0
         super().__init__(parser, "Optimization Parameters")

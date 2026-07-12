@@ -90,6 +90,7 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
 
     viewpoint_stack = []
     ema_loss_for_log = 0.0
+    max_gaussians_warned = False
     progress_bar = tqdm(range(1, opt.iterations + 1), desc="Training")
 
     for iteration in progress_bar:
@@ -128,8 +129,16 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    n_gaussians = gaussians.get_xyz.shape[0]
+                    skip_densify = bool(opt.max_gaussians) and n_gaussians >= opt.max_gaussians
+                    if skip_densify and not max_gaussians_warned:
+                        tqdm.write(f"[iter {iteration}] hit --max_gaussians={opt.max_gaussians} "
+                                   f"({n_gaussians} Gaussians) -- skipping further clone/split to "
+                                   f"avoid OOM, pruning continues.")
+                        max_gaussians_warned = True
                     gaussians.densify_and_prune(opt.densify_grad_threshold, opt.densify_grad_abs_threshold,
-                                                 0.005, scene.cameras_extent, size_threshold)
+                                                 0.005, scene.cameras_extent, size_threshold,
+                                                 skip_densify=skip_densify)
 
                 if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter):
