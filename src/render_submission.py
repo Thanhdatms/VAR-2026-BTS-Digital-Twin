@@ -70,8 +70,31 @@ def save_image(arr, path):
         img.save(path)
 
 
+def _supersampled_cam_infos(cam_infos, factor):
+    """Scale width/height by `factor` and drop image_path so Camera builds at the
+    supersampled resolution instead of latching onto a GT image's native size (Camera.__init__
+    ignores the width/height args whenever an image is attached -- see scene/cameras.py)."""
+    if factor <= 1:
+        return cam_infos
+    return [ci._replace(width=ci.width * factor, height=ci.height * factor, image_path="")
+            for ci in cam_infos]
+
+
+def _box_downsample(arr, factor):
+    """Exact box-filter downsample by an integer factor (area-average over each factor x
+    factor block). This is the correction Mip-Splatting motivates at the training/rasterizer
+    level (2D box filter instead of a dilation-only filter) -- applied here as a cheap
+    render-time post-process instead, so it needs no rasterizer changes: render at N x the
+    target resolution, then average back down. Mitigates aliasing/moire on thin wires and
+    high-frequency stripe patterns without touching training."""
+    h, w, c = arr.shape
+    h2, w2 = h // factor, w // factor
+    arr = arr[: h2 * factor, : w2 * factor]
+    return arr.reshape(h2, factor, w2, factor, c).mean(axis=(1, 3))
+
+
 def render_scene(scene_source_path, model_path, output_root, sh_degree=3, iteration=None,
-                  device=torch.device("cpu"), white_background=False):
+                  device=torch.device("cpu"), white_background=False, supersample=1):
     scene_name = os.path.basename(os.path.normpath(scene_source_path))
     ckpt_path, loaded_it = find_checkpoint(model_path, iteration)
     print(f"[{scene_name}] loading checkpoint iter {loaded_it}: {ckpt_path}")
@@ -84,7 +107,8 @@ def render_scene(scene_source_path, model_path, output_root, sh_degree=3, iterat
     gt_dir = gt_dir if os.path.isdir(gt_dir) else None  # only public_set scenes have this
 
     cam_infos = readTestPosesCSV(csv_path, images_folder=gt_dir)
-    cameras = cameraList_from_camInfos(cam_infos, data_device=device)
+    render_cam_infos = _supersampled_cam_infos(cam_infos, supersample)
+    cameras = cameraList_from_camInfos(render_cam_infos, data_device=device)
 
     bg_color = [1.0, 1.0, 1.0] if white_background else [0.0, 0.0, 0.0]
     background = torch.tensor(bg_color, dtype=torch.float32, device=device)
@@ -99,7 +123,10 @@ def render_scene(scene_source_path, model_path, output_root, sh_degree=3, iterat
         for cam_info, cam in zip(cam_infos, cameras):
             try:
                 image = torch.clamp(render(cam, gaussians, background)["render"], 0.0, 1.0)
-                arr = (image.permute(1, 2, 0).cpu().numpy() * 255.0).round().astype(np.uint8)
+                arr = (image.permute(1, 2, 0).cpu().numpy() * 255.0)
+                if supersample > 1:
+                    arr = _box_downsample(arr, supersample)
+                arr = arr.round().clip(0, 255).astype(np.uint8)
                 if arr.shape[0] != cam_info.height or arr.shape[1] != cam_info.width:
                     raise ValueError(
                         f"render size {arr.shape[1]}x{arr.shape[0]} != test_poses.csv "
@@ -135,6 +162,12 @@ if __name__ == "__main__":
     parser.add_argument("--sh_degree", type=int, default=3)
     parser.add_argument("--white_background", action="store_true")
     parser.add_argument("--data_device", type=str, default="cuda")
+    parser.add_argument("--supersample", type=int, default=2,
+                         help="Render at this integer factor x the target width/height, then "
+                              "box-downsample back down before saving. Mitigates aliasing/blur "
+                              "on thin wires and high-frequency stripe patterns (see CLAUDE.md "
+                              "conversation notes). Costs supersample^2 render compute -- pass 1 "
+                              "to disable. Only affects render_submission.py, not training.")
     args = parser.parse_args()
 
     device = pick_device(args.data_device)
@@ -147,7 +180,7 @@ if __name__ == "__main__":
         try:
             render_scene(scene_path, os.path.join(args.models_root, scene_name), args.output_root,
                          sh_degree=args.sh_degree, iteration=args.iteration, device=device,
-                         white_background=args.white_background)
+                         white_background=args.white_background, supersample=args.supersample)
         except RuntimeError as e:
             print(e)
             incomplete_scenes.append(scene_name)

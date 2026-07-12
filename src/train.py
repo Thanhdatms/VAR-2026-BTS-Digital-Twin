@@ -108,6 +108,8 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (
             1.0 - ssim(image.unsqueeze(0), gt_image.unsqueeze(0)))
+        if opt.lambda_scale_reg > 0:
+            loss = loss + opt.lambda_scale_reg * gaussians.get_scaling.amax(dim=1).mean()
         loss.backward()
 
         with torch.no_grad():

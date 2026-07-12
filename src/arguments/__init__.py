@@ -82,12 +82,30 @@ class OptimizationParams(ParamGroup):
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
-        self.percent_dense = 0.01
+        # percent_dense/densify_grad_threshold/densify_until_iter lowered from upstream 3DGS
+        # defaults (0.01 / 0.0002 / 15_000) to fight blur on thin structures (BTS wires) and
+        # high-frequency stripe patterns (checkered/corrugated roofs) -- see CLAUDE.md /
+        # conversation notes. Root cause (AbsGS, arXiv:2404.10484 / FreGS, CVPR 2024): the
+        # vanilla positional-gradient threshold under-splits Gaussians in these regions because
+        # per-pixel gradients under one large Gaussian cancel out ("gradient collision") before
+        # ever tripping densify_grad_threshold, so one blurry Gaussian keeps standing in for
+        # detail that needs many small ones. Lowering the threshold + percent_dense makes
+        # splitting trigger earlier/for smaller primitives; extending densify_until_iter gives
+        # more densification passes before the position LR decays. Start conservative
+        # (0.00015) and lower further (e.g. 0.0001) if thin/high-freq regions are still blurry
+        # after re-evaluating on public_set.
+        self.percent_dense = 0.005
         self.lambda_dssim = 0.2
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
+        self.densify_until_iter = 20_000
+        self.densify_grad_threshold = 0.00015
         self.random_background = False
+        # Optional heuristic regularization (off by default, not from a specific paper): mean
+        # per-Gaussian max-scale penalty, discouraging large "sheet" Gaussians from smearing
+        # across multiple stripes/wire segments instead of splitting to represent them. Sweep
+        # small values (e.g. 0.001-0.01) on public_set before trusting it -- an untested weight
+        # can just as easily blur small-scale detail by over-shrinking everything.
+        self.lambda_scale_reg = 0.0
         super().__init__(parser, "Optimization Parameters")
