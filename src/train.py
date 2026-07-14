@@ -26,7 +26,7 @@ from tqdm import tqdm
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from arguments import ModelParams, OptimizationParams, PipelineParams
-from gaussian_renderer import render
+from gaussian_renderer import render, describe_backend
 from scene import Scene
 from scene.gaussian_model import GaussianModel
 from utils.image_utils import psnr
@@ -65,6 +65,7 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
     print("Training ")
     
     device = pick_device(dataset.data_device)
+    describe_backend(device)
 
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset.source_path, gaussians, model_path=dataset.model_path,

@@ -15,23 +15,33 @@ left open, so the backend is chosen at call time instead of being hard-coded):
   (no tiling), so treat it as a debug/smoke-test path — not for full-resolution or
   full-iteration-count training. See its module docstring for scale guidance.
 
-train.py / render_submission.py should only ever call `render()` from this module.
+train.py / render_submission.py should only ever call `render()` from this module. Call
+`describe_backend(device)` once at the start of a run (train.py / render_submission.py both
+do) to print which backend was actually resolved -- the selection below is a silent
+try/except ImportError chain, so without that print a failed AbsGS build on Colab
+(colab_setup.sh only warns, never fails, if the AbsGS extension doesn't compile) would
+silently downgrade training to vanilla CUDA with no indication in the logs.
 """
 
 import torch
 
+# Cached per device-type string ("cuda" / "cpu") so repeated render() calls in the training
+# loop don't redo the import-probing every iteration.
+_resolved_backend = {}
 
-def render(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0, sh_degree_override=None):
-    """Returns a dict with keys: render (3,H,W), viewspace_points, visibility_filter, radii."""
-    device = pc.get_xyz.device
 
-    if device.type == "cuda":
+def _resolve_backend(device_type):
+    if device_type in _resolved_backend:
+        return _resolved_backend[device_type]
+
+    if device_type == "cuda":
         try:
             from gaussian_renderer._cuda_backend_abs import render_cuda_abs
         except ImportError:
             pass
         else:
-            return render_cuda_abs(viewpoint_camera, pc, bg_color, scaling_modifier, sh_degree_override)
+            _resolved_backend[device_type] = ("cuda_abs", render_cuda_abs)
+            return _resolved_backend[device_type]
 
         try:
             from gaussian_renderer._cuda_backend import render_cuda
@@ -41,7 +51,36 @@ def render(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0, s
                 "nor `diff_gaussian_rasterization` is installed. On a Colab GPU runtime, build "
                 "the submodules first (see scripts/colab_setup.sh / PLAN.md Phase 0)."
             ) from e
-        return render_cuda(viewpoint_camera, pc, bg_color, scaling_modifier, sh_degree_override)
+        _resolved_backend[device_type] = ("cuda", render_cuda)
+        return _resolved_backend[device_type]
 
     from gaussian_renderer.cpu_rasterizer import render_cpu
-    return render_cpu(viewpoint_camera, pc, bg_color, scaling_modifier, sh_degree_override)
+    _resolved_backend[device_type] = ("cpu", render_cpu)
+    return _resolved_backend[device_type]
+
+
+_BACKEND_DESCRIPTIONS = {
+    "cuda_abs": "AbsGS-patched CUDA rasterizer (diff_gaussian_rasterization_abs) -- "
+                "abs-gradient split criterion is ACTIVE.",
+    "cuda": "official upstream CUDA rasterizer (diff_gaussian_rasterization) -- "
+            "AbsGS is NOT active (extension not found/built); densify_and_prune falls back "
+            "to vanilla single-threshold behavior. See scripts/colab_setup.sh to build it.",
+    "cpu": "pure-PyTorch CPU reference rasterizer (gaussian_renderer/cpu_rasterizer.py) -- "
+           "debug/smoke-test only, not for real training. AbsGS is NOT active.",
+}
+
+
+def describe_backend(device):
+    """Resolve and print which rasterizer backend will actually be used for `device`.
+    Safe/cheap to call once at the start of a training or render run."""
+    device_type = torch.device(device).type
+    name, _ = _resolve_backend(device_type)
+    print(f"[gaussian_renderer] backend = {name}: {_BACKEND_DESCRIPTIONS[name]}")
+    return name
+
+
+def render(viewpoint_camera, pc, bg_color: torch.Tensor, scaling_modifier=1.0, sh_degree_override=None):
+    """Returns a dict with keys: render (3,H,W), viewspace_points, visibility_filter, radii."""
+    device = pc.get_xyz.device
+    _, render_fn = _resolve_backend(device.type)
+    return render_fn(viewpoint_camera, pc, bg_color, scaling_modifier, sh_degree_override)

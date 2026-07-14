@@ -8,6 +8,17 @@ strong distortion (k ~ -0.115) that is clearly visible at image borders if left 
 COLMAP's SIMPLE_RADIAL model (x_d = x_u * (1 + k*r^2), single coefficient) is numerically
 identical to OpenCV's radial-only distortion model when given distCoeffs=[k, 0, 0, 0] with
 the same camera matrix, so cv2.undistort can be used directly without needing the COLMAP CLI.
+
+Border handling: because newCameraMatrix is kept equal to K (required -- test_poses.csv fixes
+fx/fy/cx/cy/width/height, so we can't crop+shift intrinsics the way COLMAP's own
+image_undistorter does), some output pixels near the image border/corners have no
+corresponding source pixel in the original captured frame. cv2.undistort's default fill for
+those is BORDER_CONSTANT (solid black). Since every scene has exactly one camera, that black
+region lands at the *same* pixel location in every training image -- and 3DGS, optimizing
+against a screen-space-consistent dark region across many similarly-oriented drone frames,
+learns real (wrong) 3D geometry to explain it: streaky black floaters/smears near image
+corners in renders (see conversation notes / example renders). undistort_scene() below uses
+cv2.remap with BORDER_REPLICATE instead, which removes the false hard-edge signal.
 """
 
 import os
@@ -117,12 +128,21 @@ def undistort_scene(source_path, force=False, image_names=None):
         if force or not os.path.exists(dst):
             todo.append(name)
 
+    if todo:
+        # Precompute the remap tables once per scene (single camera, see CLAUDE.md 2.1) instead
+        # of letting cv2.undistort rebuild them on every call -- also lets us pick the border
+        # mode (see module docstring "Border handling"): BORDER_REPLICATE instead of
+        # cv2.undistort's default BORDER_CONSTANT/black.
+        map1, map2 = cv2.initUndistortRectifyMap(
+            K, dist, None, K, (camera.width, camera.height), cv2.CV_32FC1)
+
     for name in todo:
         src = os.path.join(images_dir, name)
         img = cv2.imread(src, cv2.IMREAD_COLOR)
         if img is None:
             raise FileNotFoundError(f"Could not read image: {src}")
-        undistorted = cv2.undistort(img, K, dist, None, K)
+        undistorted = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR,
+                                 borderMode=cv2.BORDER_REPLICATE)
         dst = os.path.join(out_dir, name)
         ok = cv2.imwrite(dst, undistorted)
         if not ok:

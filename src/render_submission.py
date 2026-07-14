@@ -31,7 +31,7 @@ from scene.gaussian_model import GaussianModel
 from scene.dataset_readers import readTestPosesCSV
 from utils.camera_utils import cameraList_from_camInfos
 from utils.system_utils import searchForMaxIteration
-from gaussian_renderer import render
+from gaussian_renderer import render, describe_backend
 
 
 def pick_device(requested):
@@ -171,6 +171,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     device = pick_device(args.data_device)
+    describe_backend(device)
     scene_paths = ([os.path.join(args.dataset_root, args.scene)] if args.scene
                     else discover_scenes(args.dataset_root))
 
