@@ -100,7 +100,7 @@ class OptimizationParams(ParamGroup):
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
         self.densify_until_iter = 20_000
-        self.densify_grad_threshold = 0.00015
+        self.densify_grad_threshold = 0.0002
         # Split threshold when the AbsGS rasterizer backend is active (see
         # gaussian_renderer/_cuda_backend_abs.py) -- gates on the homodirectional/abs gradient
         # instead of the signed one used for densify_grad_threshold (clone). AbsGS's own repo

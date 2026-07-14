@@ -122,6 +122,17 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
                     "#gaussians": gaussians.get_xyz.shape[0],
                 })
 
+            if iteration % 1000 == 0:
+                # tqdm.write (not print) so this doesn't get overwritten by the progress bar's
+                # own carriage-return redraw -- unlike set_postfix above, this leaves a
+                # permanent line in the log, so #gaussians over time (a convergence proxy: it
+                # should climb during densify_from_iter..densify_until_iter then plateau once
+                # opacity/screen-size pruning balances further splitting) survives even when
+                # stdout is captured to a file or a notebook cell that doesn't replay
+                # in-place bar updates.
+                tqdm.write(f"[iter {iteration}] loss={ema_loss_for_log:.5f} "
+                           f"#gaussians={gaussians.get_xyz.shape[0]}")
+
             if iteration < opt.densify_until_iter:
                 vis_filter = render_pkg["visibility_filter"]
                 gaussians.max_radii2D[vis_filter] = torch.max(
