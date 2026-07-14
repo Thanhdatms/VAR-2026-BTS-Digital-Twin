@@ -107,7 +107,11 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
         image = render_pkg["render"]
         gt_image = viewpoint_cam.original_image
 
-        Ll1 = l1_loss(image, gt_image)
+        if opt.lambda_edge > 0 and viewpoint_cam.edge_weight is not None:
+            Ll1 = (torch.abs(image - gt_image) *
+                   (1.0 + opt.lambda_edge * viewpoint_cam.edge_weight)).mean()
+        else:
+            Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (
             1.0 - ssim(image.unsqueeze(0), gt_image.unsqueeze(0)))
         if opt.lambda_scale_reg > 0:

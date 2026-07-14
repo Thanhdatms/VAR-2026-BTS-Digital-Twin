@@ -19,12 +19,14 @@
 from PIL import Image
 import numpy as np
 from scene.cameras import Camera
+from utils.edge_utils import compute_edge_weight
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 
 
 def loadCam(cam_info, data_device="cpu", resolution_scale=1.0):
     image = None
+    edge_weight = None
     width, height = cam_info.width, cam_info.height
     if cam_info.image_path:
         pil_image = Image.open(cam_info.image_path).convert("RGB")
@@ -33,6 +35,10 @@ def loadCam(cam_info, data_device="cpu", resolution_scale=1.0):
             height = round(pil_image.height / resolution_scale)
             pil_image = pil_image.resize((width, height))
         image = PILtoTorch(pil_image, pil_image.size)
+        # Computed from the same (post-resolution_scale-resize) pil_image used for `image`,
+        # so it stays pixel-aligned with gt_image at whatever resolution training actually
+        # runs at (see CLAUDE.md / utils/edge_utils.py).
+        edge_weight = compute_edge_weight(pil_image)
     elif resolution_scale != 1.0:
         width = round(width / resolution_scale)
         height = round(height / resolution_scale)
@@ -40,7 +46,8 @@ def loadCam(cam_info, data_device="cpu", resolution_scale=1.0):
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T,
                    FoVx=cam_info.FovX, FoVy=cam_info.FovY,
                    image=image, image_name=cam_info.image_name, uid=cam_info.uid,
-                   data_device=data_device, width=width, height=height)
+                   data_device=data_device, width=width, height=height,
+                   edge_weight=edge_weight)
 
 
 def cameraList_from_camInfos(cam_infos, data_device="cpu", resolution_scale=1.0):

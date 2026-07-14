@@ -22,7 +22,7 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device="cpu",
-                 width=None, height=None, znear=0.01, zfar=100.0):
+                 width=None, height=None, znear=0.01, zfar=100.0, edge_weight=None):
         super().__init__()
 
         self.uid = uid
@@ -49,6 +49,10 @@ class Camera(nn.Module):
             self.original_image = None
             self.image_width = width
             self.image_height = height
+
+        # (1, H, W) EGGS-style edge-strength map (see utils/edge_utils.py), None when there's
+        # no ground-truth image to derive it from (matches original_image=None above).
+        self.edge_weight = edge_weight.to(self.data_device) if edge_weight is not None else None
 
         self.zfar = zfar
         self.znear = znear

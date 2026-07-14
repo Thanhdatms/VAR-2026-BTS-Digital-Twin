@@ -138,4 +138,21 @@ class OptimizationParams(ParamGroup):
         # of view counts), so densify_grad_threshold/densify_grad_abs_threshold above were NOT
         # retuned for it -- sweep on public_set before trusting for a real private_set1 run.
         self.pixel_aware_densify = False
+        # EGGS-style edge-weighted photometric loss (arXiv:2404.09105) -- off by default.
+        # When > 0, train.py replaces the plain L1 term with
+        # `(|image - gt| * (1 + lambda_edge * edge_weight)).mean()`, where edge_weight (see
+        # utils/edge_utils.py, computed once per train image in loadCam) is a continuous
+        # [0,1] gradient-magnitude map that is ~1 at real GT edges (wire silhouettes, panel
+        # rims) and ~0 on flat regions. This is a *different* lever from
+        # pixel_aware_densify/densify_grad_abs_threshold above: those change how
+        # per-Gaussian gradients get accumulated/thresholded, this changes the raw gradient
+        # magnitude at edge pixels before accumulation even starts -- complementary, not a
+        # substitute (see LEGS, arXiv:2606.07932, which stacks an edge/Laplacian-weighted
+        # loss on top of pixel-aware densification variants for additive gains). D-SSIM is
+        # deliberately left unweighted (only the L1 term above is affected).
+        # Sweep on public_set before trusting on private_set1 -- this shifts the gradient
+        # distribution densify_grad_threshold/densify_grad_abs_threshold were tuned against,
+        # so also watch Gaussian-count growth (not just PSNR/SSIM/LPIPS) for over-densification
+        # (floaters/needles) right at edges if lambda_edge is set too high.
+        self.lambda_edge = 0.0
         super().__init__(parser, "Optimization Parameters")
