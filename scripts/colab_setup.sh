@@ -24,19 +24,36 @@ cd "$REPO_ROOT"
 echo "== Installing project Python dependencies =="
 pip install --no-cache-dir -v -e .
 
+echo "== Checking for a physical NVIDIA GPU (independent of torch) =="
+# torch.cuda.is_available() alone can't distinguish "no GPU" from "GPU present but the
+# installed torch build can't talk to it" (e.g. pip's default `torch` wheel bundles a newer
+# CUDA runtime -- cu13 as of this writing -- than the Colab host's NVIDIA driver supports).
+# nvidia-smi reports the physical device and the driver's max-supported CUDA version even
+# when torch can't use the GPU at all, so use it to decide whether a reinstall is worth
+# attempting *before* gating on torch.cuda.is_available().
+HAS_NVIDIA_GPU=0
+DRIVER_CUDA=""
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+    HAS_NVIDIA_GPU=1
+    DRIVER_CUDA="$(nvidia-smi | grep -oP 'CUDA Version:\s*\K[0-9]+\.[0-9]+' || true)"
+fi
+
+if [ "$HAS_NVIDIA_GPU" = "1" ] && ! python3 -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
+    if [ -n "$DRIVER_CUDA" ]; then
+        echo "   GPU present but current torch build can't use it (driver supports up to CUDA $DRIVER_CUDA)"
+        echo "   -> reinstalling torch/torchvision for cu$(echo "$DRIVER_CUDA" | tr -d '.') to match the driver"
+        pip install --index-url "https://download.pytorch.org/whl/cu$(echo "$DRIVER_CUDA" | tr -d '.')" \
+            --force-reinstall torch torchvision || \
+            echo "   WARNING: reinstall for cu$(echo "$DRIVER_CUDA" | tr -d '.') failed (that exact wheel tag may not" \
+                 "exist) -- pick a matching build manually from https://pytorch.org/get-started/locally/."
+    else
+        echo "   WARNING: nvidia-smi found a GPU but its driver's CUDA version string could not be parsed --" \
+             "skipping auto-reinstall, torch will likely stay CPU-only."
+    fi
+fi
+
 if python3 -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
     echo "== CUDA GPU detected: building the official diff-gaussian-rasterization extension =="
-
-    if command -v nvcc >/dev/null 2>&1; then
-        SYSTEM_CUDA="$(nvcc --version | grep -oP 'release \K[0-9]+\.[0-9]+' || true)"
-        TORCH_CUDA="$(python3 -c 'import torch; print(torch.version.cuda or "")')"
-        if [ -n "$SYSTEM_CUDA" ] && [ -n "$TORCH_CUDA" ] && [ "$SYSTEM_CUDA" != "$TORCH_CUDA" ]; then
-            echo "   System nvcc is CUDA $SYSTEM_CUDA but installed torch was built for CUDA $TORCH_CUDA"
-            echo "   -> reinstalling torch/torchvision for cu$(echo "$SYSTEM_CUDA" | tr -d '.') to match"
-            pip install --index-url "https://download.pytorch.org/whl/cu$(echo "$SYSTEM_CUDA" | tr -d '.')" \
-                --force-reinstall torch torchvision
-        fi
-    fi
 
     export TORCH_CUDA_ARCH_LIST="$(python3 -c 'import torch; print("%d.%d" % torch.cuda.get_device_capability(0))')"
     echo "   TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST (detected from current GPU)"
@@ -98,9 +115,15 @@ if python3 -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1
         fi
     fi
 else
-    echo "== No CUDA GPU detected: skipping the CUDA rasterizer build =="
+    echo "== No usable CUDA GPU: skipping the CUDA rasterizer build =="
+    if [ "$HAS_NVIDIA_GPU" = "1" ]; then
+        echo "   nvidia-smi detected a physical GPU but torch still can't use it after the reinstall"
+        echo "   attempt above -- check 'python3 -c \"import torch; print(torch.cuda.is_available())\"'"
+        echo "   manually and pick a matching wheel from https://pytorch.org/get-started/locally/."
+    else
+        echo "   Switch the Colab runtime to a GPU (Runtime > Change runtime type) for real training."
+    fi
     echo "   Training/rendering will use gaussian_renderer/cpu_rasterizer.py (slow reference path)."
-    echo "   Switch the Colab runtime to a GPU (Runtime > Change runtime type) for real training."
 fi
 
 echo "== Setup complete =="
