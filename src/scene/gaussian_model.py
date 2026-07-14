@@ -438,17 +438,31 @@ class GaussianModel:
         if torch.cuda.is_available() and self.get_xyz.is_cuda:
             torch.cuda.empty_cache()
 
-    def add_densification_stats(self, viewspace_point_tensor, update_filter):
+    def add_densification_stats(self, viewspace_point_tensor, update_filter, pixel_weight=None):
+        # pixel_weight (optional -- Pixel-GS, ECCV 2024, arXiv:2412.02617): per-Gaussian
+        # screen-space pixel-coverage proxy for THIS view (train.py passes radii**2), used to
+        # weight this view's contribution to xyz_gradient_accum/denom instead of vanilla 3DGS's
+        # flat +1-per-view. Root cause this fixes: a Gaussian observed in many views but
+        # covering only a thin sliver of pixels each time (a wire) or only its boundary pixels
+        # each time (a panel edge) has its real per-pixel gradient diluted by a plain
+        # view-count average -- weighting by how many pixels actually carried that gradient
+        # keeps the signal from being washed out before add_densify_and_prune()'s threshold
+        # comparison. pixel_weight=None (default) reproduces the original count-based average
+        # exactly, so this is backward-compatible when the caller doesn't opt in.
         grad = viewspace_point_tensor.grad
-        self.xyz_gradient_accum[update_filter] += torch.norm(grad[update_filter, :2], dim=-1, keepdim=True)
+        if pixel_weight is None:
+            weight = 1.0
+        else:
+            weight = pixel_weight[update_filter].clamp(min=1.0).unsqueeze(-1)
+        self.xyz_gradient_accum[update_filter] += torch.norm(grad[update_filter, :2], dim=-1, keepdim=True) * weight
         if grad.shape[1] >= 4:
             # AbsGS backend: channels 2:4 are the homodirectional (abs) gradient.
             self.xyz_gradient_accum_abs[update_filter] += torch.norm(
-                grad[update_filter, 2:4], dim=-1, keepdim=True)
+                grad[update_filter, 2:4], dim=-1, keepdim=True) * weight
         else:
             # Official/CPU backend has no abs-gradient channel -- reuse the normal gradient so
             # densify_and_split() degrades to vanilla single-threshold behavior instead of never
             # splitting (grads_abs would otherwise stay all-zero and never cross the threshold).
             self.xyz_gradient_accum_abs[update_filter] += torch.norm(
-                grad[update_filter, :2], dim=-1, keepdim=True)
-        self.denom[update_filter] += 1
+                grad[update_filter, :2], dim=-1, keepdim=True) * weight
+        self.denom[update_filter] += weight

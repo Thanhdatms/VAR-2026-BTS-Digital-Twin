@@ -137,7 +137,12 @@ def training(dataset, opt, pipe, save_iterations, val_interval,
                 vis_filter = render_pkg["visibility_filter"]
                 gaussians.max_radii2D[vis_filter] = torch.max(
                     gaussians.max_radii2D[vis_filter], render_pkg["radii"][vis_filter])
-                gaussians.add_densification_stats(render_pkg["viewspace_points"], vis_filter)
+                # Pixel-GS-style pixel-weighted densification (opt-in, see arguments/__init__.py
+                # OptimizationParams.pixel_aware_densify): radii**2 approximates the number of
+                # screen pixels this Gaussian covers in the current view, using the radii value
+                # every render() backend already returns (no rasterizer changes needed).
+                pixel_weight = render_pkg["radii"].float() ** 2 if opt.pixel_aware_densify else None
+                gaussians.add_densification_stats(render_pkg["viewspace_points"], vis_filter, pixel_weight)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None

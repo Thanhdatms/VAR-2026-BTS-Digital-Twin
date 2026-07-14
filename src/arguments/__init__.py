@@ -128,4 +128,14 @@ class OptimizationParams(ParamGroup):
         # ~32GB card, 2_500_000-3_000_000 is a reasonable starting point for this dataset's
         # scene sizes.
         self.max_gaussians = 0
+        # Pixel-GS-style pixel-weighted density control (ECCV 2024, arXiv:2412.02617) -- off by
+        # default. When True, train.py weights each view's contribution to
+        # xyz_gradient_accum/denom (see GaussianModel.add_densification_stats) by that
+        # Gaussian's screen-space pixel footprint (radii**2) in that view instead of a flat +1,
+        # so thin/boundary structures (BTS wires, panel edges) whose real gradient gets diluted
+        # by plain view-count averaging are more likely to cross the split/clone threshold.
+        # This changes the *scale* of the accumulated grads (denom sums squared-radii instead
+        # of view counts), so densify_grad_threshold/densify_grad_abs_threshold above were NOT
+        # retuned for it -- sweep on public_set before trusting for a real private_set1 run.
+        self.pixel_aware_densify = False
         super().__init__(parser, "Optimization Parameters")
