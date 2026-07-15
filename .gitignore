@@ -12,3 +12,10 @@ wheels/
 phase1
 .DS_Store
 *.DS_Store
+
+# Training/inference artifacts (regenerated locally / on Colab, not source)
+/output/
+/submission/
+eval_report.json
+/dataset
+/.claude
